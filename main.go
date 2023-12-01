@@ -21,7 +21,9 @@ var (
 	mongoUri string
 	baseURL string
 	words []string
-	connectedToDatabase bool = false
+	after string
+	isPaged bool = false
+	connectedToDatabase bool = true
 	mongoClient *mongo.Client
 	mongoDatabase string
 	mongoCollection string
@@ -45,6 +47,11 @@ type Paging struct {
 	NumFoundText     string `json:"num_found_text"`
 	TotalNumFound    int    `json:"total_num_found"`
 	IsApproximate    bool   `json:"is_approximate"`
+}
+
+type Price struct {
+	Date  time.Time `bson:"date"`
+	Price float64   `bson:"price"`
 }
 
 func extractPrice(buy map[string]interface{}) (float64, error) {
@@ -111,6 +118,18 @@ func extractSection(data map[string]interface{}) {
 	for _, value := range data {
 		if obj, ok := value.(map[string]interface{}); ok {
 			if products, exists := obj["products"]; exists {
+				if paging, exists := products.(map[string]interface{})["paging"]; exists {
+					fmt.Printf("after:%s\n", after)
+					fmt.Printf("next_is_after:%s\n", paging.(map[string]interface{})["next_is_after"])
+					after = paging.(map[string]interface{})["next_is_after"].(string)
+				}
+
+				if hasNext, exists := products.(map[string]interface{})["is_paged"]; exists {
+					fmt.Printf("is paged:%v\n\n", hasNext)
+					isPaged = hasNext.(bool)
+				}
+
+				
 				if results, exists := products.(map[string]interface{})["results"]; exists {
 					if resultSlice, ok := results.([]interface{}); ok {
 						for _, result := range resultSlice {
@@ -118,13 +137,15 @@ func extractSection(data map[string]interface{}) {
 								if productView, _ := resultObj["product_views"]; exists {
 									var (
 										title string
-										brand string
+										brand string 
 										images []string
 										price float64
+										slug string
 									)
 
 									if core, ok := productView.(map[string]interface{})["core"]; ok{
 										title = core.(map[string]interface{})["title"].(string)
+										slug = core.(map[string]interface{})["title"].(string)
 										
 										if ItemBrand, ok := core.(map[string]interface{})["brand"]; ok{
 											if(ItemBrand != nil){
@@ -148,8 +169,7 @@ func extractSection(data map[string]interface{}) {
 										price = returnedPrice
 									}
 
-									saveToDatabase(title, brand, images, price)
-									
+									saveToDatabase(title, brand, images, price, slug)
 								}
 							}
 						}
@@ -169,71 +189,113 @@ func initialize(){
 	mongoUri = os.Getenv("MONGODB_URI")
 	mongoDatabase = os.Getenv("MONGODB_DATABASE")
 	mongoCollection = os.Getenv("COLLECTION")
+	baseURL = os.Getenv("TAKEALOT_BASE_URL")
 
 	if mongoUri == "" {
-		log.Fatal("You must set your 'MONGODB_URI' enviroment variable")
+		panic("You must set your 'MONGODB_URI' enviroment variable")
+	}
+
+	if mongoDatabase == "" {
+		panic("You must set your 'MONGODB_URI' enviroment variable")
+	}
+
+	if mongoCollection == "" {
+		panic("You must set your 'MONGODB_URI' enviroment variable")
+	}
+
+	if baseURL == "" {
+		panic("You must set your 'MONGODB_URI' enviroment variable")
 	}
 }
 
 func connectMongoDB(){
+	mongoClient, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(mongoUri))
+	if err != nil {
+		panic(err)
+	}
+
+	err = mongoClient.Ping(context.TODO(), nil)
+	if err != nil {
+		panic(err)
+	}
+
+	connectedToDatabase = true
+	fmt.Println("Connected to MongoDB")
+}
+
+func saveToDatabase(title string, brand string,  images []string, price float64, slug string){
+	link := "https://www.takealot.com"
+
+	defer func() {
+		if mongoClient != nil {
+			if err := mongoClient.Disconnect(context.TODO()); err != nil {
+				panic(err)
+			}
+		}
+	}()
+
 	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(mongoUri))
 	if err != nil {
 		panic(err)
 	}
 
-	defer func() {
-		if err := client.Disconnect(context.TODO()); err != nil {
-			panic(err)
-		}
-	}()
-
-	mongoClient = client
-	connectedToDatabase = true
-}
-
-func saveToDatabase(title string, brand string,  images []string, price float64){
-	collection := mongoClient.Database(mongoDatabase).Collection(mongoCollection)
+	filter := bson.M{"title": title}
+	now := time.Now()
 	
-	var result bson.M
-	
-	err := collection.FindOne(context.TODO(), bson.D{{"title", title}}).Decode(&result)
-
-	if err == mongo.ErrNoDocuments {
-		fmt.Printf("%s: No documents found", title)
-		return
+	update := bson.M{
+		"$push": bson.M{
+			"prices": bson.M{
+				"$each": []Price{
+					{
+						Date:  now,
+						Price: price,
+					},
+				},
+			},
+		},
+		"$set": bson.M{
+			"title":  title,
+			"images": images,
+			"brand": brand,
+			"lastUpdate": now,
+			"source": bson.M{
+				"website": link,
+				"slug": slug,
+				"id": nil,
+			},
+		},
 	}
+
+	collection := client.Database(mongoDatabase).Collection(mongoCollection)
+	opts := options.Update().SetUpsert(true)
+	result, err := collection.UpdateOne(context.TODO(), filter, update, opts)
 
 	if err != nil {
 		panic(err)
 	}
 
-	jsonData, err := json.MarshalIndent(result, "", "    ")
-	
-	
-
-	if err != nil {
-		panic(err)
+	if result.UpsertedCount > 0 {
+		fmt.Println("Document was created")
+	} else {
+		fmt.Println("Document was found and updated")
 	}
-
-	fmt.Printf("%s\n, %v", jsonData, err)
+	client.Disconnect(context.TODO());
 }
 
 func main() {
 	initialize()
-	connectMongoDB()
-	words = []string {"milk"}
-	baseURL = "https://api.takealot.com/rest/v-1-11-0/searches/products,filters,facets,sort_options,breadcrumbs,slots_audience,context,seo?sb=1&si=e79a9b6e48278258c21aa98190192185&newsearch=true&track=2&userinit=true&searchbox=true"
+	
+	//TODO: get list from database
+	words = []string {"fridge", "couch", "milk", "bread", "coffee"}
 	client := &http.Client{}
 
-	if(connectedToDatabase){
 		for _, word := range words {
-			var nextIsAfter string
 			page := 1
 
 			for {
-				apiURL := fmt.Sprintf("%s&qsearch=%s&page=%d", baseURL, word, page)
-				if nextIsAfter != "" {
-					apiURL += fmt.Sprintf("&after=%s", nextIsAfter)
+				apiURL := fmt.Sprintf("%s&qsearch=%s", baseURL, word, page)
+				if after != "" {
+					apiURL += fmt.Sprintf("&after=%s", after)
 				}
 
 				req, err := http.NewRequest("GET", apiURL, nil)
@@ -244,7 +306,7 @@ func main() {
 
 				req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 				req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-				req.Header.Set("Referer", "https://www.example.com")
+				req.Header.Set("Referer", "https://takealot.com")
 
 				response, err := client.Do(req)
 				if err != nil {
@@ -274,16 +336,14 @@ func main() {
 				}
 
 				extractSection(jsonData)
-
-				if !apiResponse.Sections["products"].IsPaged {
-					break
+				
+				if !isPaged || after == "" {
+				 	break
 				}
 
-				nextIsAfter = apiResponse.Sections["products"].Paging.NextIsAfter
 				page++
-
 				time.Sleep(5 * time.Second)
 			}
 		}
-	}
+
 }
