@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -27,6 +24,7 @@ var (
 	mongoClient *mongo.Client
 	mongoDatabase string
 	mongoCollection string
+	mongoContext context.Context
 )
 
 type ApiResponse struct {
@@ -209,12 +207,18 @@ func initialize(){
 }
 
 func connectMongoDB(){
-	mongoClient, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(mongoUri))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoUri))
 	if err != nil {
 		panic(err)
 	}
 
-	err = mongoClient.Ping(context.TODO(), nil)
+	mongoClient = client
+	mongoContext = context.TODO()
+
+	err = mongoClient.Ping(ctx, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -282,18 +286,33 @@ func saveToDatabase(title string, brand string,  images []string, price float64,
 	client.Disconnect(context.TODO());
 }
 
+func getWords(){
+	connectMongoDB()
+	// collection := mongoClient.Database(mongoDatabase).Collection(mongoCollection)
+	// filter := bson.D{{}}
+	// cursor, err := collection.Find(mongoContext, filter);
+	// if err != nil{
+	//	log.Fatal(err)
+	// }
+	// defer cursor.Close(mongoContext)
+	// fmt.Println(cursor)
+
+	// words = []string {"milk", "bread", "eggs", "coke", "nivea"}
+}
+
 func main() {
 	initialize()
-	
-	//TODO: get list from database
-	words = []string {"fridge", "couch", "milk", "bread", "coffee"}
-	client := &http.Client{}
+	getWords()
 
+	/*
+	for {
+		client := &http.Client{}
+		
 		for _, word := range words {
 			page := 1
 
 			for {
-				apiURL := fmt.Sprintf("%s&qsearch=%s", baseURL, word, page)
+				apiURL := fmt.Sprintf("%s&qsearch=%s", baseURL, word)
 				if after != "" {
 					apiURL += fmt.Sprintf("&after=%s", after)
 				}
@@ -335,15 +354,16 @@ func main() {
 					return
 				}
 
+				fmt.Printf("word: %s\n", word)
 				extractSection(jsonData)
-				
+					
 				if !isPaged || after == "" {
-				 	break
+					break
 				}
 
 				page++
-				time.Sleep(5 * time.Second)
 			}
 		}
-
+	}
+	*/
 }
