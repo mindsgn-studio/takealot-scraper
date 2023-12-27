@@ -3,6 +3,7 @@ import { ObjectId } from "mongodb";
 import fetch, { Headers } from "node-fetch";
 import "dotenv/config";
 
+/*
 let previousTime: Date = new Date();
 
 const has12HourPassed = (previousTime: Date) => {
@@ -12,6 +13,7 @@ const has12HourPassed = (previousTime: Date) => {
   const hoursDifference = timeDifference / (1000 * 60 * 60);
   return hoursDifference >= 1;
 };
+*/
 
 const extractGalleryImages = (images: [string]) => {
   if (Array.isArray(images)) {
@@ -62,7 +64,6 @@ const updateTakealotItem = async (api: string, id: string, link: string) => {
       return response.json();
     })
     .then(async (response) => {
-      console.log(response);
       const { title, core, stock_availability, gallery, buybox } = response;
       const { brand } = core;
       const { status } = stock_availability;
