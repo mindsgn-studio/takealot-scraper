@@ -1,19 +1,18 @@
 import { clientPromise } from "./utility";
-import { ObjectId } from "mongodb";
+import { searchItems } from "./constants";
 import fetch, { Headers } from "node-fetch";
 import "dotenv/config";
 
-/*
-let previousTime: Date = new Date();
-
-const has12HourPassed = (previousTime: Date) => {
-  const currentTime: Date = new Date();
-  //@ts-ignore
-  const timeDifference = currentTime - previousTime;
-  const hoursDifference = timeDifference / (1000 * 60 * 60);
-  return hoursDifference >= 1;
+const sleep = (millis: number) => {
+  return new Promise((resolve) => setTimeout(resolve, millis));
 };
-*/
+
+const getTakealotIDFromLink = (link: string) => {
+  const regex = /PLID(\d+)/;
+  const match = link.match(regex);
+
+  return match ? match[1] : null;
+};
 
 const extractGalleryImages = (images: [string]) => {
   if (Array.isArray(images)) {
@@ -34,15 +33,12 @@ const extractGalleryImages = (images: [string]) => {
   }
 };
 
-const isLink = (link: string) => {
-  const regex = /PLID(\d+)/;
-  const match = link.match(regex);
+const searchTakealotProduct = async (search: string, nextIsAfter?: string) => {
+  let apiURL = `https://api.takealot.com/rest/v-1-11-0/searches/products?newsearch=true&qsearch=${search}&track=1&userinit=true&searchbox=true`;
 
-  return match ? link : null;
-};
-
-const updateTakealotItem = async (api: string, id: string, link: string) => {
-  const apiURL = `${api}`;
+  if (nextIsAfter) {
+    apiURL = `https://api.takealot.com/rest/v-1-11-0/searches/products?newsearch=true&qsearch=${search}&track=1&userinit=true&searchbox=true&after=${nextIsAfter}`;
+  }
 
   const headers = new Headers({
     "User-Agent":
@@ -56,94 +52,107 @@ const updateTakealotItem = async (api: string, id: string, link: string) => {
     headers: headers,
   };
 
-  await fetch(apiURL, requestOptions)
-    .then(async (response) => {
+  const fetchResponse = await fetch(apiURL, requestOptions)
+    .then((response) => {
       if (!response.ok) {
         throw new Error(`HTTP error! Status: ${response.status}`);
       }
       return response.json();
     })
     .then(async (response) => {
-      const { title, core, stock_availability, gallery, buybox } = response;
-      const { brand } = core;
-      const { status } = stock_availability;
-      const { images } = gallery;
-      const { prices } = buybox;
-      const price = prices[0];
-      const newImages = extractGalleryImages(images);
-      const now = new Date();
+      const { sections } = response;
+      const { products } = sections;
+      const { results, paging, is_paged } = products;
+      const { next_is_after } = paging;
+      nextIsAfter = next_is_after;
 
-      const filter = {
-        title,
-      };
+      results.map(async (item) => {
+        const { product_views } = item;
 
-      const client = await clientPromise;
-      const db = await client.db(`${process.env.MONGO_DB}`);
-      const options = { upsert: true };
+        const {
+          core,
+          stock_availability_summary,
+          gallery,
+          buybox_summary,
+          enhanced_ecommerce_click,
+        } = product_views;
 
-      const update = {
-        $push: {
-          prices: {
-            $each: [
-              {
-                date: now,
-                price: price,
-              },
-            ],
+        const { ecommerce } = enhanced_ecommerce_click;
+        const { click } = ecommerce;
+        const { products } = click;
+        const { id } = products[0];
+
+        const newID = getTakealotIDFromLink(id);
+
+        const { brand, title, slug } = core;
+        const { status } = stock_availability_summary;
+        const { images } = gallery;
+        const { prices } = buybox_summary;
+        const price = prices[0];
+        const newImages = extractGalleryImages(images);
+        const now = new Date();
+
+        const filter = {
+          "sources.id": newID,
+        };
+
+        const update = {
+          $push: {
+            prices: {
+              $each: [
+                {
+                  date: now,
+                  price: price,
+                },
+              ],
+            },
           },
-        },
-        $set: {
-          title,
-          images: newImages,
-          brand,
-          status,
-          link,
-          updated: now,
-          sources: {
-            id,
-            source: "takealot",
-            api: `https://api.takealot.com/rest/v-1-11-0/product-details/PLID${id}?platform=desktop&display_credit=true`,
+          $set: {
+            title,
+            images: newImages,
+            brand,
+            status,
+            link: `https://www.takealot.com/${slug}/PLID${newID}`,
+            updated: new Date(),
+            sources: {
+              id: newID,
+              source: "takealot",
+              api: `https://api.takealot.com/rest/v-1-11-0/product-details/PLID${newID}?platform=desktop&display_credit=true`,
+            },
           },
-        },
-      };
+        };
 
-      await db.collection("items").updateOne(filter, update, options);
-    })
-    .catch(() => {
-      return null;
-    });
-};
+        const client = await clientPromise;
+        const db = await client.db(`${process.env.MONGODB_DATABASE}`);
+        const options = { upsert: true };
+        const cursor = await db
+          .collection("items")
+          .updateOne(filter, update, options);
+        const { matchedCount, upsertedCount } = cursor;
+        if (matchedCount == 0) {
+          console.log(`new item: ${title}`, upsertedCount, matchedCount);
+        } else {
+          console.log(`updated item: ${title}`, upsertedCount, matchedCount);
+        }
+      });
 
-const getID = async (id: string) => {
-  const client = await clientPromise;
-  const db = await client.db(`${process.env.MONGODB_DATABASE}`);
-  const cursor = await db
-    .collection("items")
-    .find({ _id: new ObjectId(id) })
-    .toArray();
+      console.log(search, nextIsAfter, is_paged);
 
-  cursor.map((item: any) => {
-    const { sources, link } = item;
-    const { source, api, id } = sources;
-    if (source === "takealot") {
-      if (isLink(api)) {
-        updateTakealotItem(api, id, link);
+      if (nextIsAfter != "") {
+        await sleep(5000);
+        searchTakealotProduct(search, nextIsAfter);
       }
-    }
-  });
+    })
+    .catch(async (error) => {
+      console.log(error);
+    });
+
+  return fetchResponse;
 };
 
-const getWishlist = async () => {
-  const client = await clientPromise;
-  const db = await client.db(`${process.env.MONGODB_DATABASE}`);
-  const cursor = await db.collection("watchlist").find({}).toArray();
-
-  cursor.map((item) => {
-    const { id } = item;
-    getID(id);
-  });
+const getRandom = () => {
+  return Math.random() * (searchItems.length - 1);
 };
 
-setInterval(() => {
-  getWishlist();
-}, 10000);
+const random = getRandom().toFixed();
+searchTakealotProduct(searchItems[random]);
