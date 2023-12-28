@@ -7,6 +7,7 @@
   "license": "MIT",
   "scripts": {
     "start": "tsc && node dist/app.js",
+    "run": "node dist/app.js",
     "lint": "eslint . --ext .ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
