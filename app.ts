@@ -141,6 +141,9 @@ const searchTakealotProduct = async (search: string, nextIsAfter?: string) => {
       if (nextIsAfter != "") {
         await sleep(5000);
         searchTakealotProduct(search, nextIsAfter);
+      } else {
+        random = getRandom().toFixed();
+        searchTakealotProduct(searchItems[random]);
       }
     })
     .catch(async (error) => {
@@ -154,5 +157,6 @@ const getRandom = () => {
   return Math.random() * (searchItems.length - 1);
 };
 
-const random = getRandom().toFixed();
+let random = getRandom().toFixed();
+
 searchTakealotProduct(searchItems[random]);

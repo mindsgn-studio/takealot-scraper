@@ -2,5 +2,6 @@
 .vscode
 temp
 data.json
+dist
 tmp
 node_modules
