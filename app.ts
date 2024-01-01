@@ -3,6 +3,8 @@ import { searchItems } from "./constants";
 import fetch, { Headers } from "node-fetch";
 import "dotenv/config";
 
+let random: string;
+
 const sleep = (millis: number) => {
   return new Promise((resolve) => setTimeout(resolve, millis));
 };
@@ -146,8 +148,9 @@ const searchTakealotProduct = async (search: string, nextIsAfter?: string) => {
         searchTakealotProduct(searchItems[random]);
       }
     })
-    .catch(async (error) => {
-      console.log(error);
+    .catch(async () => {
+      random = getRandom().toFixed();
+      searchTakealotProduct(searchItems[random]);
     });
 
   return fetchResponse;
@@ -157,6 +160,6 @@ const getRandom = () => {
   return Math.random() * (searchItems.length - 1);
 };
 
-let random = getRandom().toFixed();
+random = getRandom().toFixed();
 
 searchTakealotProduct(searchItems[random]);
