@@ -4,6 +4,14 @@ import fetch, { Headers } from "node-fetch";
 import "dotenv/config";
 
 let random: string;
+let client: any;
+let db: any;
+let brands = [];
+
+const connectDB = async () => {
+  client = await clientPromise;
+  db = await client.db(`${process.env.MONGODB_DATABASE}`);
+};
 
 const sleep = (millis: number) => {
   return new Promise((resolve) => setTimeout(resolve, millis));
@@ -124,8 +132,6 @@ const searchTakealotProduct = async (search: string, nextIsAfter?: string) => {
           },
         };
 
-        const client = await clientPromise;
-        const db = await client.db(`${process.env.MONGODB_DATABASE}`);
         const options = { upsert: true };
         const cursor = await db
           .collection("items")
@@ -145,7 +151,7 @@ const searchTakealotProduct = async (search: string, nextIsAfter?: string) => {
         searchTakealotProduct(search, nextIsAfter);
       } else {
         random = getRandom().toFixed();
-        searchTakealotProduct(searchItems[random]);
+        searchTakealotProduct(brands[random].brand);
       }
     })
     .catch(async () => {
@@ -156,10 +162,37 @@ const searchTakealotProduct = async (search: string, nextIsAfter?: string) => {
   return fetchResponse;
 };
 
+const getBrands = async () => {
+  try {
+    await connectDB();
+
+    const pipeline = [
+      {
+        $group: {
+          _id: "$brand",
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          brand: "$_id",
+          count: 1,
+        },
+      },
+    ];
+
+    brands = await db.collection("items").aggregate(pipeline).toArray();
+
+    random = getRandom().toFixed();
+    searchTakealotProduct(brands[random].brand);
+  } catch (error) {
+    console.log(error);
+  }
+};
+
 const getRandom = () => {
   return Math.random() * (searchItems.length - 1);
 };
 
-random = getRandom().toFixed();
-
-searchTakealotProduct(searchItems[random]);
+getBrands();

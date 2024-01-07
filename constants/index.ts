@@ -27,7 +27,7 @@ const searchItems = [
   "Computer",
   "Tablet",
   "Fashion",
-  "GamingGarden",
+  "Garden",
   "Pool",
   "Patio",
   "Health",
