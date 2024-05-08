@@ -1,52 +1,25 @@
 const searchItems = [
-  "apple",
-  "baby",
-  "book",
-  "appliances",
-  "stationary",
-  "samsung",
-  "bosch",
-  "ryobi",
-  "xbox",
-  "Defy",
-  "sony",
-  "volkano",
-  "dji",
-  "lg",
-  "asus",
-  "garmin",
-  "Nestle",
-  "Nescafe",
-  "Mantelli's",
-  "Beacon",
-  "JLAB",
-  "Beauty",
-  "Cameras",
-  "Camping",
-  "Cellphones",
-  "Computer",
-  "Tablet",
-  "Fashion",
-  "Garden",
-  "Pool",
-  "Patio",
-  "Health",
-  "Home",
-  "Kitchen",
-  "Travel",
-  "Series",
-  "Audio",
-  "Video",
-  "toy",
-  "sport",
-  "training",
-  "pets",
-  "game",
-  "xbox",
-  "car",
-  "shoes",
-  "health",
-  "food",
+  {
+    brand: "SAMSUNG",
+  },
+  {
+    brand: "XBOX",
+  },
+  {
+    brand: "SONY",
+  },
+  {
+    brand: "apple",
+  },
+  {
+    brand: "WD",
+  },
+  {
+    brand: "JBL",
+  },
+  {
+    brand: "nokia"
+  }
 ];
 
 export { searchItems };

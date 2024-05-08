@@ -107,16 +107,6 @@ const searchTakealotProduct = async (search: string, nextIsAfter?: string) => {
         };
 
         const update = {
-          $push: {
-            prices: {
-              $each: [
-                {
-                  date: now,
-                  price: price,
-                },
-              ],
-            },
-          },
           $set: {
             title,
             images: newImages,
@@ -136,11 +126,37 @@ const searchTakealotProduct = async (search: string, nextIsAfter?: string) => {
         const cursor = await db
           .collection("items")
           .updateOne(filter, update, options);
-        const { matchedCount, upsertedCount } = cursor;
+        const { matchedCount, upsertedCount, upsertedId } = cursor;
+        
         if (matchedCount == 0) {
-          console.log(`new item: ${title}`, upsertedCount, matchedCount);
+          // console.log(`new item: ${title}`);
         } else {
-          console.log(`updated item: ${title}`, upsertedCount, matchedCount);
+          // console.log(`updated item: ${title}`);
+        }
+
+        const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
+        
+        const ItemResponse = await db.collection("items").findOne({
+          title,
+          brand,
+          link: `https://www.takealot.com/${slug}/PLID${newID}`,
+        });
+
+        const {_id} = ItemResponse
+        const itemObjectId = _id.toString()
+
+        const PricesResponse = await db.collection("prices").findOne({
+          itemID: itemObjectId,
+          date: { $gt: twelveHoursAgo }
+        });
+
+        if(!PricesResponse){
+          await db.collection("prices").insertOne({
+            itemID: itemObjectId,
+            date: now,
+            currency: "zar",
+            price,
+          });
         }
       });
 
@@ -183,8 +199,13 @@ const getBrands = async () => {
     ];
 
     brands = await db.collection("items").aggregate(pipeline).toArray();
-
+    
+    if(brands.length==0){
+      brands = searchItems
+    }
+    
     random = getRandom().toFixed();
+
     searchTakealotProduct(brands[random].brand);
   } catch (error) {
     console.log(error);
