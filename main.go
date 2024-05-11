@@ -1,13 +1,30 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type JsonObject map[string]interface{}
+
+var collection *mongo.Collection
+var ctx = context.TODO()
+
+func connectDatabase() {
+	mongoURI := os.Getenv("MONGODB_URI")
+	_, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+
+	if err != nil {
+		panic(err)
+	}
+}
 
 func getBrand() {
 	getItems()
@@ -70,5 +87,6 @@ func getItems() {
 }
 
 func main() {
+	connectDatabase()
 	getBrand()
 }
