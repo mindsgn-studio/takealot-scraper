@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -21,16 +22,108 @@ var ctx context.Context
 
 type JsonObject map[string]interface{}
 
-func saveItemData(item map[string]interface{}) {
-	fmt.Println(item)
-}
-
 func saveItemPrice(item map[string]interface{}) {
 	fmt.Println(item)
 }
 
-func extractItemData(item map[string]interface{}) {
-	fmt.Println(item)
+func saveItemData(
+	title string,
+	images []string,
+	brand string,
+	link string,
+	itemID string) {
+
+}
+
+func extractImage(gallery interface{}) ([]string, error) {
+	var images []string
+
+	switch gallery.(type) {
+	case string:
+		fmt.Println("Warning: 'images' field in gallery is a single string, expected an array.")
+		return nil, fmt.Errorf("unexpected type for gallery: string")
+	case []interface{}:
+		for _, imageInterface := range gallery.([]interface{}) {
+			image, ok := imageInterface.(string)
+			if !ok {
+				fmt.Println("Error: Invalid image format in gallery")
+				continue
+			}
+			imageUrl := strings.ReplaceAll(image, "{size}", "zoom")
+			images = append(images, imageUrl)
+			fmt.Println(imageUrl)
+		}
+	default:
+		fmt.Println("Warning: Unexpected type for 'images' field in gallery")
+		return nil, fmt.Errorf("unexpected type for gallery: %T", gallery)
+	}
+
+	return images, nil
+}
+
+func extractItemData(item map[string]interface{}) error {
+	core, ok := item["core"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	gallery, ok := item["gallery"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	images, ok := gallery["images"]
+	if !ok {
+		return nil
+	}
+
+	image, err := extractImage(images)
+	if err != nil {
+		return nil
+	}
+
+	buySummary, ok := item["buybox_summary"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	prices, ok := buySummary["prices"].([]string)
+	if !ok {
+		return nil
+	}
+
+	title, ok := core["title"].(string)
+	if !ok {
+		return nil
+	}
+
+	brand, ok := core["brand"].(string)
+	if !ok {
+		return nil
+	}
+
+	slug, ok := core["slug"].(string)
+	if !ok {
+		return nil
+	}
+
+	link := ""
+	itemID := ""
+
+	if title == "" || brand == "" || link == "" || itemID == "" {
+		return nil
+	}
+
+	saveItemData(
+		title,
+		image,
+		brand,
+		link,
+		itemID,
+	)
+
+	fmt.Println(title, brand, slug, prices)
+	return nil
 }
 
 func getItems(brand string, nextIsAfter string) error {
