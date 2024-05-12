@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -22,8 +24,61 @@ var ctx context.Context
 
 type JsonObject map[string]interface{}
 
-func saveItemPrice(item map[string]interface{}) {
-	fmt.Println(item)
+type Price struct {
+	ItemID   string    `bson:"ItemID"`
+	Date     time.Time `bson:"date"`
+	Currency string    `bson:"currency"`
+	Price    float64   `bson:"price"`
+}
+
+func saveItemPrice(price float64, title string, brand string, link string) {
+	db := mongoClient.Database("snapprice")
+	itemCollection := db.Collection("items")
+	pricesCollection := db.Collection("prices")
+
+	twelveHoursAgo := time.Now().Add(-12 * time.Hour)
+
+	filter := map[string]interface{}{
+		"title": title,
+		"brand": brand,
+		"link":  link,
+	}
+
+	var result map[string]interface{}
+
+	err := itemCollection.FindOne(ctx, filter).Decode(&result)
+	if err != nil {
+		return
+	}
+
+	if id, ok := result["_id"].(primitive.ObjectID); ok {
+		itemID := id.Hex()
+		filter := map[string]interface{}{
+			"itemID": itemID,
+			"date":   map[string]interface{}{"$gt": twelveHoursAgo},
+		}
+
+		var result map[string]interface{}
+		err := pricesCollection.FindOne(ctx, filter).Decode(&result)
+		if err != nil {
+			newPrice := &Price{
+				ItemID:   itemID,
+				Date:     time.Now(),
+				Currency: "zar",
+				Price:    price,
+			}
+
+			response, err := pricesCollection.InsertOne(ctx, newPrice)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			fmt.Println(response.InsertedID)
+		}
+	}
+
+	return
 }
 
 func saveItemData(
@@ -33,6 +88,53 @@ func saveItemData(
 	link string,
 	itemID string) {
 
+	db := mongoClient.Database("snapprice")
+	collection := db.Collection("items")
+
+	var filter = map[string]interface{}{
+		"sources.id": itemID,
+	}
+
+	var update = map[string]interface{}{
+		"$set": map[string]interface{}{
+			"title":   title,
+			"images":  images,
+			"brand":   brand,
+			"link":    link,
+			"updated": time.Now(),
+			"sources": map[string]interface{}{
+				"id":     itemID,
+				"source": "takealot",
+				"api":    `https://api.takealot.com/rest/v-1-11-0/product-details/PLID` + string(itemID) + "?platform=desktop&display_credit=true",
+			},
+		},
+	}
+
+	upsert := true
+
+	_, err := collection.UpdateOne(ctx, filter, update, &options.UpdateOptions{Upsert: &upsert})
+	if err != nil {
+		print(err)
+		return
+	}
+}
+
+func extractPrice(prices interface{}) (float64, error) {
+	switch prices.(type) {
+	case []interface{}:
+		if len(prices.([]interface{})) == 0 {
+			return 0, errors.New("Error: Empty slice provided for prices")
+		}
+
+		price, ok := prices.([]interface{})[0].(float64)
+		if !ok {
+			return 0, errors.New("Error: Invalid price format in prices")
+		}
+
+		return price, nil
+	default:
+		return 0, fmt.Errorf("Error: Invalid [rice format in prices")
+	}
 }
 
 func extractImage(gallery interface{}) ([]string, error) {
@@ -51,7 +153,6 @@ func extractImage(gallery interface{}) ([]string, error) {
 			}
 			imageUrl := strings.ReplaceAll(image, "{size}", "zoom")
 			images = append(images, imageUrl)
-			fmt.Println(imageUrl)
 		}
 	default:
 		fmt.Println("Warning: Unexpected type for 'images' field in gallery")
@@ -59,6 +160,32 @@ func extractImage(gallery interface{}) ([]string, error) {
 	}
 
 	return images, nil
+}
+
+func getProductID(products interface{}) (string, error) {
+	switch products.(type) {
+	case []interface{}: // Handle an array of products
+		// Assuming each element in the array is a map representing a product
+		for _, productInterface := range products.([]interface{}) {
+			product, ok := productInterface.(map[string]interface{})
+			if !ok {
+				continue // Skip invalid entries
+			}
+			id, ok := product["id"].(string)
+			if ok {
+				return id, nil
+			}
+		}
+	case map[string]interface{}: // Handle a single product as a map
+		id, ok := products.(map[string]interface{})["id"].(string)
+		if ok {
+			return id, nil
+		}
+
+	default:
+		return "", fmt.Errorf("unexpected type for products: %T", products)
+	}
+	return "", fmt.Errorf("ID not found in product data")
 }
 
 func extractItemData(item map[string]interface{}) error {
@@ -82,16 +209,6 @@ func extractItemData(item map[string]interface{}) error {
 		return nil
 	}
 
-	buySummary, ok := item["buybox_summary"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	prices, ok := buySummary["prices"].([]string)
-	if !ok {
-		return nil
-	}
-
 	title, ok := core["title"].(string)
 	if !ok {
 		return nil
@@ -107,10 +224,51 @@ func extractItemData(item map[string]interface{}) error {
 		return nil
 	}
 
-	link := ""
-	itemID := ""
+	buySummary, ok := item["buybox_summary"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
 
-	if title == "" || brand == "" || link == "" || itemID == "" {
+	enhancedEcommerceClick, ok := item["enhanced_ecommerce_click"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	ecommerce, ok := enhancedEcommerceClick["ecommerce"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	click, ok := ecommerce["click"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	products, ok := click["products"]
+	if !ok {
+		return nil
+	}
+
+	id, err := getProductID(products)
+
+	if err != nil {
+		return nil
+	}
+
+	link := fmt.Sprintf("https://www.takealot.com/%s/%s", slug, id)
+	itemID := strings.ReplaceAll(id, "PLID", "")
+	prices, ok := buySummary["prices"]
+
+	if !ok {
+		return nil
+	}
+
+	price, err := extractPrice(prices)
+	if err != nil {
+		return nil
+	}
+
+	if title == "" || brand == "" || link == "" {
 		return nil
 	}
 
@@ -122,7 +280,7 @@ func extractItemData(item map[string]interface{}) error {
 		itemID,
 	)
 
-	fmt.Println(title, brand, slug, prices)
+	saveItemPrice(price, title, brand, link)
 	return nil
 }
 
@@ -202,7 +360,7 @@ func getItems(brand string, nextIsAfter string) error {
 		extractItemData(productViews)
 	}
 
-	time.Sleep(1 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	paging, ok := products["paging"].(map[string]interface{})
 
