@@ -68,13 +68,11 @@ func saveItemPrice(price float64, title string, brand string, link string) {
 				Price:    price,
 			}
 
-			response, err := pricesCollection.InsertOne(ctx, newPrice)
+			_, err := pricesCollection.InsertOne(ctx, newPrice)
 			if err != nil {
 				fmt.Println(err)
 				return
 			}
-
-			fmt.Println(response.InsertedID)
 		}
 	}
 
@@ -292,8 +290,6 @@ func getItems(brand string, nextIsAfter string) error {
 		url += "&after=" + nextIsAfter
 	}
 
-	fmt.Println(brand, nextIsAfter)
-
 	client := &http.Client{}
 
 	request, err := http.NewRequest(http.MethodGet, url, nil)
@@ -401,7 +397,6 @@ func connectDatabase() error {
 	}
 
 	fmt.Println("Connected to MongoDB successfully")
-	fmt.Println("\n")
 	return nil
 }
 
