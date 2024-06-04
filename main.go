@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"go.mongodb.org/mongo-driver/bson"
+	"github.com/mindsgn-studio/takealot-scraper/category"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -277,8 +277,8 @@ func extractItemData(item map[string]interface{}) error {
 		link,
 		itemID,
 	)
-
 	saveItemPrice(price, title, brand, link)
+
 	return nil
 }
 
@@ -356,8 +356,6 @@ func getItems(brand string, nextIsAfter string) error {
 		extractItemData(productViews)
 	}
 
-	time.Sleep(5 * time.Second)
-
 	paging, ok := products["paging"].(map[string]interface{})
 
 	if !ok {
@@ -400,47 +398,9 @@ func connectDatabase() error {
 	return nil
 }
 
-func getBrand() error {
-	db := mongoClient.Database("snapprice")
-	collection := db.Collection("items")
-
-	pipeline := mongo.Pipeline{
-		{{"$group", bson.D{
-			{"_id", "$brand"},
-			{"count", bson.D{{"$sum", 1}}},
-		}}},
-		{{"$project", bson.D{
-			{"_id", 0},
-			{"brand", "$_id"},
-			{"count", 1},
-		}}},
-		{{"$sample", bson.D{{"size", 1}}}},
-	}
-
-	cursor, err := collection.Aggregate(ctx, pipeline)
-	if err != nil {
-		return fmt.Errorf("error creating aggregation cursor: %w", err)
-	}
-	defer func() {
-		if err := cursor.Close(ctx); err != nil {
-			fmt.Printf("error closing cursor: %v\n", err)
-		}
-	}()
-
-	for cursor.Next(ctx) {
-		var result bson.M
-		if err := cursor.Decode(&result); err != nil {
-			return fmt.Errorf("error decoding document: %w", err)
-		}
-		brand := result["brand"].(string)
-		getItems(brand, "")
-	}
-
-	if err := cursor.Err(); err != nil {
-		return fmt.Errorf("cursor error: %w", err)
-	}
-
-	return nil
+func getBrand() {
+	brand := category.GetRandomCategory()
+	getItems(brand, "")
 }
 
 func main() {
@@ -455,8 +415,5 @@ func main() {
 		panic(connectionErr)
 	}
 
-	brandError := getBrand()
-	if brandError != nil {
-		panic(brandError)
-	}
+	getBrand()
 }
