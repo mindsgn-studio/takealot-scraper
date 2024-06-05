@@ -21,6 +21,7 @@ import (
 
 var mongoClient *mongo.Client
 var ctx context.Context
+var total uint64 = 0
 
 type JsonObject map[string]interface{}
 
@@ -162,8 +163,7 @@ func extractImage(gallery interface{}) ([]string, error) {
 
 func getProductID(products interface{}) (string, error) {
 	switch products.(type) {
-	case []interface{}: // Handle an array of products
-		// Assuming each element in the array is a map representing a product
+	case []interface{}:
 		for _, productInterface := range products.([]interface{}) {
 			product, ok := productInterface.(map[string]interface{})
 			if !ok {
@@ -174,7 +174,7 @@ func getProductID(products interface{}) (string, error) {
 				return id, nil
 			}
 		}
-	case map[string]interface{}: // Handle a single product as a map
+	case map[string]interface{}:
 		id, ok := products.(map[string]interface{})["id"].(string)
 		if ok {
 			return id, nil
@@ -278,11 +278,13 @@ func extractItemData(item map[string]interface{}) error {
 		itemID,
 	)
 	saveItemPrice(price, title, brand, link)
+	total++
 
 	return nil
 }
 
 func getItems(brand string, nextIsAfter string) error {
+	fmt.Println(brand)
 	escapedBrand := url.QueryEscape(brand)
 	url := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/searches/products?newsearch=true&qsearch=%s&track=1&userinit=true&searchbox=true", escapedBrand)
 
@@ -348,7 +350,6 @@ func getItems(brand string, nextIsAfter string) error {
 
 		productViews, ok := productMap["product_views"].(map[string]interface{})
 		if !ok {
-			// Handle the case where "product_views" is not a map
 			fmt.Println("Missing or invalid 'product_views' field")
 			continue
 		}
@@ -364,6 +365,8 @@ func getItems(brand string, nextIsAfter string) error {
 
 	if nextPage, ok := paging["next_is_after"].(string); ok {
 		if nextPage == "" {
+			fmt.Println("total Items:", total)
+			total = 0
 			getBrand()
 		}
 
