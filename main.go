@@ -284,7 +284,6 @@ func extractItemData(item map[string]interface{}) error {
 }
 
 func getItems(brand string, nextIsAfter string) error {
-	fmt.Println(time.Now(), brand)
 	escapedBrand := url.QueryEscape(brand)
 	url := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/searches/products?newsearch=true&qsearch=%s&track=1&userinit=true&searchbox=true", escapedBrand)
 
@@ -403,6 +402,7 @@ func connectDatabase() error {
 
 func getBrand() {
 	brand := category.GetRandomCategory()
+	fmt.Println(time.Now(), brand)
 	getItems(brand, "")
 }
 
