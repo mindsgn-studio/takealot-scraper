@@ -284,7 +284,7 @@ func extractItemData(item map[string]interface{}) error {
 }
 
 func getItems(brand string, nextIsAfter string) error {
-	fmt.Println(brand)
+	fmt.Println(time.Now(), brand)
 	escapedBrand := url.QueryEscape(brand)
 	url := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/searches/products?newsearch=true&qsearch=%s&track=1&userinit=true&searchbox=true", escapedBrand)
 
@@ -365,7 +365,7 @@ func getItems(brand string, nextIsAfter string) error {
 
 	if nextPage, ok := paging["next_is_after"].(string); ok {
 		if nextPage == "" {
-			fmt.Println("total Items:", total)
+			fmt.Println(time.Now(), "total Items:", total)
 			total = 0
 			getBrand()
 		}
