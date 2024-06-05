@@ -31,7 +31,7 @@ type Price struct {
 
 var mongoClient *mongo.Client
 
-func saveItemPrice(price float64, title string, brand string, link string) {
+func SaveItemPrice(price float64, title string, brand string, link string) {
 
 	db := mongoClient.Database("snapprice")
 	itemCollection := db.Collection("items")
@@ -268,7 +268,7 @@ func extractItemData(item map[string]interface{}) error {
 	}
 
 	saveItemData(title, image, brand, link, itemID)
-	saveItemPrice(price, title, brand, link)
+	SaveItemPrice(price, title, brand, link)
 
 	total++
 

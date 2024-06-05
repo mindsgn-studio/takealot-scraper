@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/mindsgn-studio/takealot-scraper/scraper"
+	"github.com/mindsgn-studio/takealot-scraper/watch"
 )
 
 func main() {
@@ -23,6 +24,6 @@ func main() {
 	}
 
 	if input == "watch" {
-		return
+		watch.Watch()
 	}
 }
