@@ -26,4 +26,6 @@ func main() {
 	if input == "watch" {
 		watch.Watch()
 	}
+
+	return
 }
