@@ -13,7 +13,7 @@ import (
 
 	"github.com/mindsgn-studio/takealot-scraper/category"
 	"github.com/mindsgn-studio/takealot-scraper/database"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -31,57 +31,7 @@ type Price struct {
 
 var mongoClient *mongo.Client
 
-func SaveItemPrice(price float64, title string, brand string, link string) {
-
-	db := mongoClient.Database("snapprice")
-	itemCollection := db.Collection("items")
-	pricesCollection := db.Collection("prices")
-
-	twelveHoursAgo := time.Now().Add(-12 * time.Hour)
-
-	filter := map[string]interface{}{
-		"title": title,
-		"brand": brand,
-		"link":  link,
-	}
-
-	var result map[string]interface{}
-
-	err := itemCollection.FindOne(context.Background(), filter).Decode(&result)
-	if err != nil {
-		return
-	}
-
-	if id, ok := result["_id"].(primitive.ObjectID); ok {
-		itemID := id.Hex()
-		filter := map[string]interface{}{
-			"itemID": itemID,
-			"date":   map[string]interface{}{"$gt": twelveHoursAgo},
-		}
-
-		var result map[string]interface{}
-		err := pricesCollection.FindOne(context.Background(), filter).Decode(&result)
-		if err != nil {
-			newPrice := &Price{
-				ItemID:   itemID,
-				Date:     time.Now(),
-				Currency: "zar",
-				Price:    price,
-			}
-
-			_, err := pricesCollection.InsertOne(context.Background(), newPrice)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-		}
-	}
-
-	return
-}
-
-func saveItemData(title string, images []string, brand string, link string, itemID string) {
-
+func saveItemData(title string, images []string, brand string, link string, itemID string, price float64) {
 	db := mongoClient.Database("snapprice")
 	collection := db.Collection("items")
 
@@ -96,10 +46,11 @@ func saveItemData(title string, images []string, brand string, link string, item
 			"brand":   brand,
 			"link":    link,
 			"updated": time.Now(),
-			"sources": map[string]interface{}{
+			"price":   price,
+			"sources": bson.M{
 				"id":     itemID,
 				"source": "takealot",
-				"api":    `https://api.takealot.com/rest/v-1-11-0/product-details/PLID` + string(itemID) + "?platform=desktop&display_credit=true",
+				"api":    fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/product-details/PLID%s?platform=desktop&display_credit=true", itemID),
 			},
 		},
 	}
@@ -267,9 +218,7 @@ func extractItemData(item map[string]interface{}) error {
 		return nil
 	}
 
-	saveItemData(title, image, brand, link, itemID)
-	SaveItemPrice(price, title, brand, link)
-
+	saveItemData(title, image, brand, link, itemID, price)
 	total++
 
 	return nil
@@ -382,6 +331,8 @@ func GetBrand() {
 	mongoClient = client
 
 	brand := category.GetRandomCategory()
-	fmt.Println(brand)
+	fmt.Println("======================================================================")
+	fmt.Println("Brand:", brand)
+	fmt.Println("======================================================================")
 	getItems(brand, "")
 }
