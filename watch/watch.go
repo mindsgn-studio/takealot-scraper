@@ -15,7 +15,7 @@ import (
 
 var db *sql.DB
 var client = &http.Client{}
-var skip uint64 = 0
+var skip int = 0
 
 type Sources struct {
 	API string `bson:"api"`
@@ -51,11 +51,25 @@ type Price struct {
 	Price    float64   `bson:"price"`
 }
 
-func saveItemPrice(price float64, title string, brand string, link string) {
+func saveItemPrice(price float64, itemID string) {
+	db := database.ConnectDatabase()
+
+	sqlStatement := `
+	INSERT INTO price (item_id, currency, price)
+	VALUES ($1, $2, $3)`
+
+	defer db.Close()
+
+	_, err := db.Exec(sqlStatement, itemID, "zar", price)
+	if err != nil {
+		log.Fatalf("Error inserting into items table: %v", err)
+	}
+
+	fmt.Println(itemID, "saved!")
 	return
 }
 
-func getTakealotProduct(api string, title string, link string) {
+func getTakealotProduct(api string, itemID string) {
 	req, err := http.NewRequest(http.MethodGet, api, nil)
 	if err != nil {
 		return
@@ -84,46 +98,53 @@ func getTakealotProduct(api string, title string, link string) {
 
 	price := data.BuyBox.Prices[0]
 
-	saveItemPrice(price, title, data.Core.Brand, link)
+	saveItemPrice(price, itemID)
 }
 
 func getList() {
-	db = database.ConnectDatabase()
-	defer db.Close()
+	limit := 100
+	db := database.ConnectDatabase()
 
 	query := `
-		SELECT api, title, link
+		SELECT api, item_id
 		FROM items
-		LIMIT 100
-		OFFSET $1;`
+		WHERE source LIKE $1
+		LIMIT $2
+		OFFSET $3;`
 
-	rows, err := db.Query(query, skip)
+	rows, err := db.Query(query, "takealot", limit, skip*limit)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer rows.Close()
 
+	defer db.Close()
+
 	for rows.Next() {
 		var (
-			api   string
-			title string
-			link  string
+			api    string
+			itemID string
 		)
 
-		if err := rows.Scan(&api, &title, &link); err != nil {
+		if err := rows.Scan(&api, &itemID); err != nil {
 			log.Fatal(err)
 		}
 
 		if api != "" {
-			fmt.Println(api, title, link)
+			getTakealotProduct(api, itemID)
 		}
 	}
 
 	if err := rows.Err(); err != nil {
-		log.Fatal(err)
+		fmt.Println(err)
+		return
 	}
 }
 
 func Watch() {
-	getList()
+	for {
+		getList()
+		fmt.Println(skip)
+		skip++
+	}
 }
