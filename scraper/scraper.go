@@ -31,113 +31,101 @@ type Price struct {
 
 func saveItemData(title string, images []string, brand string, link string, itemID string, price float64, category string) {
 	db := database.ConnectDatabase()
+	defer db.Close()
 
 	source := "takealot"
 	api := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/product-details/PLID%s?platform=desktop&display_credit=true", itemID)
-	sqlStatement := `
-	INSERT INTO items (title, image, brand, link, item_id, price, category, source, api)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	ON CONFLICT (item_id) DO UPDATE
-	SET title = excluded.title,
-		image = excluded.image,
-		brand = excluded.brand,
-		link = excluded.link,
-		category = excluded.category,
-		source = excluded.source,
-		api = CASE WHEN items.item_id = excluded.item_id THEN excluded.api ELSE items.api END,
-		price = CASE WHEN items.item_id = excluded.item_id THEN excluded.price ELSE items.price END`
 
-	defer db.Close()
+	sqlStatement := `
+		INSERT INTO items (title, image, brand, link, item_id, price, category, source, api)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (item_id) DO UPDATE
+		SET title = EXCLUDED.title,
+			image = EXCLUDED.image,
+			brand = EXCLUDED.brand,
+			link = EXCLUDED.link,
+			category = EXCLUDED.category,
+			source = EXCLUDED.source,
+			api = CASE WHEN items.item_id = EXCLUDED.item_id THEN EXCLUDED.api ELSE items.api END,
+			price = CASE WHEN items.item_id = EXCLUDED.item_id THEN EXCLUDED.price ELSE items.price END`
 
 	_, err := db.Exec(sqlStatement, title, images[0], brand, link, itemID, price, category, source, api)
 	if err != nil {
-		log.Fatalf("Error inserting into items table: %v", err)
+		log.Printf("Error inserting into items table: %v", err)
+		return
 	}
 
 	fmt.Println(title, "saved!")
 }
 
 func extractPrice(prices interface{}) (float64, error) {
-	switch prices.(type) {
+	switch prices := prices.(type) {
 	case []interface{}:
-		if len(prices.([]interface{})) == 0 {
+		if len(prices) == 0 {
 			return 0, errors.New("Error: Empty slice provided for prices")
 		}
 
-		price, ok := prices.([]interface{})[0].(float64)
-		if !ok {
-			return 0, errors.New("Error: Invalid price format in prices")
+		if price, ok := prices[0].(float64); ok {
+			return price, nil
 		}
-
-		return price, nil
+		return 0, errors.New("Error: Invalid price format in prices")
 	default:
-		return 0, fmt.Errorf("Error: Invalid [rice format in prices")
+		return 0, errors.New("Error: Invalid price format in prices")
 	}
 }
 
 func extractImage(gallery interface{}) ([]string, error) {
-	var images []string
-
-	switch gallery.(type) {
+	switch gallery := gallery.(type) {
 	case string:
 		fmt.Println("Warning: 'images' field in gallery is a single string, expected an array.")
 		return nil, fmt.Errorf("unexpected type for gallery: string")
 	case []interface{}:
-		for _, imageInterface := range gallery.([]interface{}) {
-			image, ok := imageInterface.(string)
-			if !ok {
+		images := make([]string, 0, len(gallery)) // Preallocate slice capacity
+		for _, imageInterface := range gallery {
+			if image, ok := imageInterface.(string); ok {
+				imageURL := strings.ReplaceAll(image, "{size}", "zoom")
+				images = append(images, imageURL)
+			} else {
 				fmt.Println("Error: Invalid image format in gallery")
-				continue
 			}
-			imageUrl := strings.ReplaceAll(image, "{size}", "zoom")
-			images = append(images, imageUrl)
 		}
+		return images, nil
 	default:
 		fmt.Println("Warning: Unexpected type for 'images' field in gallery")
 		return nil, fmt.Errorf("unexpected type for gallery: %T", gallery)
 	}
-
-	return images, nil
 }
 
 func getProductID(products interface{}) (string, error) {
-	switch products.(type) {
+	switch products := products.(type) {
 	case []interface{}:
-		for _, productInterface := range products.([]interface{}) {
-			product, ok := productInterface.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			id, ok := product["id"].(string)
-			if ok {
-				return id, nil
+		for _, product := range products {
+			if productMap, ok := product.(map[string]interface{}); ok {
+				if id, ok := productMap["id"].(string); ok {
+					return id, nil
+				}
 			}
 		}
 	case map[string]interface{}:
-		id, ok := products.(map[string]interface{})["id"].(string)
-		if ok {
+		if id, ok := products["id"].(string); ok {
 			return id, nil
 		}
-
-	default:
-		return "", fmt.Errorf("unexpected type for products: %T", products)
 	}
 	return "", fmt.Errorf("ID not found in product data")
 }
 
 func extractItemData(item map[string]interface{}, category string) error {
-	core, ok := item["core"].(map[string]interface{})
-	if !ok {
-		return nil
+	core, coreOK := item["core"].(map[string]interface{})
+	gallery, galleryOK := item["gallery"].(map[string]interface{})
+	buySummary, buySummaryOK := item["buybox_summary"].(map[string]interface{})
+	enhancedEcommerceClick, enhancedEcommerceClickOK := item["enhanced_ecommerce_click"].(map[string]interface{})
+
+	if !coreOK || !galleryOK || !buySummaryOK || !enhancedEcommerceClickOK {
+		return nil // Missing essential data, return early
 	}
 
-	gallery, ok := item["gallery"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	images, ok := gallery["images"]
-	if !ok {
+	images, imagesOK := gallery["images"]
+	if !imagesOK {
 		return nil
 	}
 
@@ -146,57 +134,38 @@ func extractItemData(item map[string]interface{}, category string) error {
 		return nil
 	}
 
-	title, ok := core["title"].(string)
-	if !ok {
+	title, titleOK := core["title"].(string)
+	brand, brandOK := core["brand"].(string)
+	slug, slugOK := core["slug"].(string)
+
+	if !titleOK || !brandOK || !slugOK {
 		return nil
 	}
 
-	brand, ok := core["brand"].(string)
-	if !ok {
+	ecommerce, ecommerceOK := enhancedEcommerceClick["ecommerce"].(map[string]interface{})
+	if !ecommerceOK {
 		return nil
 	}
 
-	slug, ok := core["slug"].(string)
-	if !ok {
+	click, clickOK := ecommerce["click"].(map[string]interface{})
+	if !clickOK {
 		return nil
 	}
 
-	buySummary, ok := item["buybox_summary"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	enhancedEcommerceClick, ok := item["enhanced_ecommerce_click"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	ecommerce, ok := enhancedEcommerceClick["ecommerce"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	click, ok := ecommerce["click"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-
-	products, ok := click["products"]
-	if !ok {
+	products, productsOK := click["products"]
+	if !productsOK {
 		return nil
 	}
 
 	id, err := getProductID(products)
-
 	if err != nil {
 		return nil
 	}
 
-	link := fmt.Sprintf("https://www.takealot.com/%s/%s", slug, id)
-	itemID := strings.ReplaceAll(id, "PLID", "")
-	prices, ok := buySummary["prices"]
+	link := fmt.Sprintf("https://www.takealot.com/%s/%s", slug, strings.ReplaceAll(id, "PLID", ""))
+	prices, pricesOK := buySummary["prices"]
 
-	if !ok {
+	if !pricesOK {
 		return nil
 	}
 
@@ -209,45 +178,45 @@ func extractItemData(item map[string]interface{}, category string) error {
 		return nil
 	}
 
-	saveItemData(title, image, brand, link, itemID, price, category)
+	saveItemData(title, image, brand, link, strings.ReplaceAll(id, "PLID", ""), price, category)
 	total++
 
 	return nil
 }
 
 func getItems(category string, nextIsAfter string) error {
-	escapedBrand := url.QueryEscape(category)
-	url := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/searches/products?newsearch=true&qsearch=%s&track=1&userinit=true&searchbox=true", escapedBrand)
+	escapedCategory := url.QueryEscape(category)
+	apiURL := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/searches/products?newsearch=true&qsearch=%s&track=1&userinit=true&searchbox=true", escapedCategory)
 
 	if nextIsAfter != "" {
-		url += "&after=" + nextIsAfter
+		apiURL += "&after=" + nextIsAfter
 	}
 
-	request, err := http.NewRequest(http.MethodGet, url, nil)
+	request, err := http.NewRequest(http.MethodGet, apiURL, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create HTTP request: %v", err)
 	}
 
 	request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
-	response, err := client.Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute HTTP request: %v", err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("Error: API returned status code %d", response.StatusCode)
+		return fmt.Errorf("API returned non-OK status code: %d", response.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read response body: %v", err)
 	}
 
 	var data JsonObject
 	if err := json.Unmarshal(body, &data); err != nil {
-		return err
+		return fmt.Errorf("failed to unmarshal JSON: %v", err)
 	}
 
 	sections, ok := data["sections"].(map[string]interface{})
@@ -278,15 +247,18 @@ func getItems(category string, nextIsAfter string) error {
 			continue
 		}
 
-		extractItemData(productViews, category)
+		if err := extractItemData(productViews, category); err != nil {
+			fmt.Printf("Error extracting item data: %v\n", err)
+		}
 	}
 
 	paging, ok := products["paging"].(map[string]interface{})
 	if !ok {
-		return fmt.Errorf("results not found in products")
+		return fmt.Errorf("paging not found in products")
 	}
 
-	if nextPage, ok := paging["next_is_after"].(string); ok && nextPage != "" {
+	nextPage, nextPageExists := paging["next_is_after"].(string)
+	if nextPageExists && nextPage != "" {
 		return getItems(category, nextPage)
 	}
 
