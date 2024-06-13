@@ -1,21 +1,19 @@
 package scraper
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	_ "github.com/lib/pq"
 	"github.com/mindsgn-studio/takealot-scraper/category"
 	"github.com/mindsgn-studio/takealot-scraper/database"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 var total uint64 = 0
@@ -29,41 +27,38 @@ type Price struct {
 	Price    float64   `bson:"price"`
 }
 
-var mongoClient *mongo.Client
+const (
+	host     = "api.snapprice.co.za"
+	port     = 5432
+	user     = "seni"
+	password = "Qe6kpnhnn7Xd3367MguD"
+	dbname   = "snapprice"
+)
 
-func saveItemData(title string, images []string, brand string, link string, itemID string, price float64) {
-	db := mongoClient.Database("snapprice")
-	collection := db.Collection("items")
+func saveItemData(title string, images []string, brand string, link string, itemID string, price float64, category string) {
+	db := database.ConnectDatabase()
+	defer db.Close()
 
-	var filter = map[string]interface{}{
-		"sources.id": itemID,
-	}
+	source := "takealot"
 
-	var update = map[string]interface{}{
-		"$set": map[string]interface{}{
-			"title":   title,
-			"images":  images,
-			"brand":   brand,
-			"link":    link,
-			"updated": time.Now(),
-			"price":   price,
-			"sources": bson.M{
-				"id":     itemID,
-				"source": "takealot",
-				"api":    fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/product-details/PLID%s?platform=desktop&display_credit=true", itemID),
-			},
-		},
-	}
+	sqlStatement := `
+	INSERT INTO items (title, image, brand, link, item_id, price, category, source)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	ON CONFLICT (item_id) DO UPDATE
+	SET title = excluded.title,
+		image = excluded.image,
+		brand = excluded.brand,
+		link = excluded.link,
+		category = excluded.category,
+		source = excluded.source,
+		price = CASE WHEN items.item_id = excluded.item_id THEN excluded.price ELSE items.price END`
 
-	upsert := true
-
-	_, err := collection.UpdateOne(context.Background(), filter, update, &options.UpdateOptions{Upsert: &upsert})
+	_, err := db.Exec(sqlStatement, title, images[0], brand, link, itemID, price, category, source)
 	if err != nil {
-		fmt.Println(err)
-		return
+		log.Fatalf("Error inserting into items table: %v", err)
 	}
 
-	return
+	fmt.Println(title, "Item data saved successfully!")
 }
 
 func extractPrice(prices interface{}) (float64, error) {
@@ -134,7 +129,7 @@ func getProductID(products interface{}) (string, error) {
 	return "", fmt.Errorf("ID not found in product data")
 }
 
-func extractItemData(item map[string]interface{}) error {
+func extractItemData(item map[string]interface{}, category string) error {
 	core, ok := item["core"].(map[string]interface{})
 	if !ok {
 		return nil
@@ -218,14 +213,14 @@ func extractItemData(item map[string]interface{}) error {
 		return nil
 	}
 
-	saveItemData(title, image, brand, link, itemID, price)
+	saveItemData(title, image, brand, link, itemID, price, category)
 	total++
 
 	return nil
 }
 
-func getItems(brand string, nextIsAfter string) error {
-	escapedBrand := url.QueryEscape(brand)
+func getItems(category string, nextIsAfter string) error {
+	escapedBrand := url.QueryEscape(category)
 	url := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/searches/products?newsearch=true&qsearch=%s&track=1&userinit=true&searchbox=true", escapedBrand)
 
 	if nextIsAfter != "" {
@@ -294,7 +289,7 @@ func getItems(brand string, nextIsAfter string) error {
 			continue
 		}
 
-		extractItemData(productViews)
+		extractItemData(productViews, category)
 	}
 
 	paging, ok := products["paging"].(map[string]interface{})
@@ -309,30 +304,17 @@ func getItems(brand string, nextIsAfter string) error {
 			total = 0
 			GetBrand()
 		}
-
-		getItems(brand, nextPage)
+		client.CloseIdleConnections()
+		getItems(category, nextPage)
 	}
 
 	return nil
 }
 
 func GetBrand() {
-	defer func() {
-		if err := mongoClient.Disconnect(context.Background()); err != nil {
-			fmt.Printf("error disconnecting from MongoDB: %v\n", err)
-		}
-	}()
-
-	client, err := database.ConnectDatabase()
-	if err != nil {
-		panic(err)
-	}
-
-	mongoClient = client
-
-	brand := category.GetRandomCategory()
+	category := category.GetRandomCategory()
 	fmt.Println("======================================================================")
-	fmt.Println("Brand:", brand)
+	fmt.Println("Category:", category)
 	fmt.Println("======================================================================")
-	getItems(brand, "")
+	getItems(category, "")
 }
