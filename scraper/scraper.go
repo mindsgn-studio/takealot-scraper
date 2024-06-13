@@ -31,7 +31,6 @@ type Price struct {
 
 func saveItemData(title string, images []string, brand string, link string, itemID string, price float64, category string) {
 	db := database.ConnectDatabase()
-	defer db.Close()
 
 	source := "takealot"
 	api := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/product-details/PLID%s?platform=desktop&display_credit=true", itemID)
@@ -48,14 +47,14 @@ func saveItemData(title string, images []string, brand string, link string, item
 		api = CASE WHEN items.item_id = excluded.item_id THEN excluded.api ELSE items.api END,
 		price = CASE WHEN items.item_id = excluded.item_id THEN excluded.price ELSE items.price END`
 
+	defer db.Close()
+
 	_, err := db.Exec(sqlStatement, title, images[0], brand, link, itemID, price, category, source, api)
 	if err != nil {
 		log.Fatalf("Error inserting into items table: %v", err)
 	}
 
 	fmt.Println(title, "saved!")
-
-	return
 }
 
 func extractPrice(prices interface{}) (float64, error) {
