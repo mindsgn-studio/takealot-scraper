@@ -1,38 +1,30 @@
 package database
 
 import (
-	"context"
-	"os"
-	"time"
+	"database/sql"
+	"fmt"
+	"log"
 
-	"github.com/joho/godotenv"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	_ "github.com/lib/pq"
 )
 
-func ConnectDatabase() (*mongo.Client, error) {
-	var mongoClient *mongo.Client
-	var ctx context.Context
+const (
+	host     = "api.snapprice.co.za"
+	port     = 5432
+	user     = "seni"
+	password = "Qe6kpnhnn7Xd3367MguD"
+	dbname   = "snapprice"
+)
 
-	ctx = context.Background()
-	err := godotenv.Load()
+func ConnectDatabase() *sql.DB {
+	dbinfo := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		host, port, user, password, dbname)
+	db, err := sql.Open("postgres", dbinfo)
 	if err != nil {
-		return nil, err
+		log.Fatal(err)
 	}
 
-	mongoURI := os.Getenv("MONGODB_URI")
-	mongoClient, err = mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, err
-	}
+	// defer db.Close()
 
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	err = mongoClient.Ping(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return mongoClient, nil
+	return db
 }

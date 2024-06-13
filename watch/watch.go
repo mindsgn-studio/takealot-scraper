@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mindsgn-studio/takealot-scraper/database"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -153,17 +152,5 @@ func getList(skip int64) {
 }
 
 func Watch() {
-	defer func() {
-		if err := mongoClient.Disconnect(context.Background()); err != nil {
-			fmt.Printf("error disconnecting from MongoDB: %v\n", err)
-		}
-	}()
-
-	client, err := database.ConnectDatabase()
-	if err != nil {
-		panic(err)
-	}
-
-	mongoClient = client
 	getList(0)
 }
