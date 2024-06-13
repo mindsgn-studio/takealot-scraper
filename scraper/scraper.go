@@ -29,8 +29,7 @@ type Price struct {
 }
 
 func saveItemData(title string, images []string, brand string, link string, itemID string, price float64, category string) {
-	db := database.ConnectDatabase()
-	defer db.Close()
+	//defer db.Close()
 
 	source := "takealot"
 	api := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/product-details/PLID%s?platform=desktop&display_credit=true", itemID)
@@ -264,6 +263,7 @@ func getItems(category string, nextIsAfter string) error {
 }
 
 func GetBrand() {
+	db := database.ConnectDatabase()
 	category := category.GetRandomCategory()
 	fmt.Println("======================================================================")
 	fmt.Println("Category:", category)
