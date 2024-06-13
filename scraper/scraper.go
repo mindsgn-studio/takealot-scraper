@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -209,14 +208,10 @@ func getItems(category string, nextIsAfter string) error {
 		return fmt.Errorf("API returned non-OK status code: %d", response.StatusCode)
 	}
 
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %v", err)
-	}
-
+	decoder := json.NewDecoder(response.Body)
 	var data JsonObject
-	if err := json.Unmarshal(body, &data); err != nil {
-		return fmt.Errorf("failed to unmarshal JSON: %v", err)
+	if err := decoder.Decode(&data); err != nil {
+		return fmt.Errorf("failed to decode JSON: %v", err)
 	}
 
 	sections, ok := data["sections"].(map[string]interface{})
@@ -257,9 +252,9 @@ func getItems(category string, nextIsAfter string) error {
 		return fmt.Errorf("paging not found in products")
 	}
 
-	nextPage, nextPageExists := paging["next_is_after"].(string)
-	if nextPageExists && nextPage != "" {
-		return getItems(category, nextPage)
+	nextIsAfter, nextPageExists := paging["next_is_after"].(string)
+	if nextPageExists && nextIsAfter != "" {
+		return getItems(category, nextIsAfter)
 	}
 
 	fmt.Println("Total Items:", total)
