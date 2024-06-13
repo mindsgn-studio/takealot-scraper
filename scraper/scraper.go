@@ -1,6 +1,7 @@
 package scraper
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 )
 
 var total uint64 = 0
+var db *sql.DB
 
 type JsonObject map[string]interface{}
 
@@ -263,7 +265,7 @@ func getItems(category string, nextIsAfter string) error {
 }
 
 func GetBrand() {
-	db := database.ConnectDatabase()
+	db = database.ConnectDatabase()
 	category := category.GetRandomCategory()
 	fmt.Println("======================================================================")
 	fmt.Println("Category:", category)
