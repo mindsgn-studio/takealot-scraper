@@ -20,6 +20,8 @@ var total uint64 = 0
 
 type JsonObject map[string]interface{}
 
+var client = &http.Client{}
+
 type Price struct {
 	ItemID   string    `bson:"ItemID"`
 	Date     time.Time `bson:"date"`
@@ -27,23 +29,15 @@ type Price struct {
 	Price    float64   `bson:"price"`
 }
 
-const (
-	host     = "api.snapprice.co.za"
-	port     = 5432
-	user     = "seni"
-	password = "Qe6kpnhnn7Xd3367MguD"
-	dbname   = "snapprice"
-)
-
 func saveItemData(title string, images []string, brand string, link string, itemID string, price float64, category string) {
 	db := database.ConnectDatabase()
 	defer db.Close()
 
 	source := "takealot"
-
+	api := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/product-details/PLID%s?platform=desktop&display_credit=true", itemID)
 	sqlStatement := `
-	INSERT INTO items (title, image, brand, link, item_id, price, category, source)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	INSERT INTO items (title, image, brand, link, item_id, price, category, source, api)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	ON CONFLICT (item_id) DO UPDATE
 	SET title = excluded.title,
 		image = excluded.image,
@@ -51,14 +45,17 @@ func saveItemData(title string, images []string, brand string, link string, item
 		link = excluded.link,
 		category = excluded.category,
 		source = excluded.source,
+		api = CASE WHEN items.item_id = excluded.item_id THEN excluded.api ELSE items.api END,
 		price = CASE WHEN items.item_id = excluded.item_id THEN excluded.price ELSE items.price END`
 
-	_, err := db.Exec(sqlStatement, title, images[0], brand, link, itemID, price, category, source)
+	_, err := db.Exec(sqlStatement, title, images[0], brand, link, itemID, price, category, source, api)
 	if err != nil {
 		log.Fatalf("Error inserting into items table: %v", err)
 	}
 
-	fmt.Println(title, "Item data saved successfully!")
+	fmt.Println(title, "saved!")
+
+	return
 }
 
 func extractPrice(prices interface{}) (float64, error) {
@@ -227,38 +224,31 @@ func getItems(category string, nextIsAfter string) error {
 		url += "&after=" + nextIsAfter
 	}
 
-	client := &http.Client{}
-
 	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
 	response, err := client.Do(request)
 	if err != nil {
-		return nil
+		return err
 	}
-
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		fmt.Printf("Error: API return status code %d\n", response.StatusCode)
-		return nil
+		return fmt.Errorf("Error: API returned status code %d", response.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(response.Body)
 	if err != nil {
-		fmt.Println(err)
-		return nil
+		return err
 	}
 
 	var data JsonObject
-	err = json.Unmarshal(body, &data)
-	if err != nil {
-		fmt.Println(err)
-		return nil
+	if err := json.Unmarshal(body, &data); err != nil {
+		return err
 	}
 
 	sections, ok := data["sections"].(map[string]interface{})
@@ -293,21 +283,17 @@ func getItems(category string, nextIsAfter string) error {
 	}
 
 	paging, ok := products["paging"].(map[string]interface{})
-
 	if !ok {
 		return fmt.Errorf("results not found in products")
 	}
 
-	if nextPage, ok := paging["next_is_after"].(string); ok {
-		if nextPage == "" {
-			fmt.Println("total Items:", total)
-			total = 0
-			GetBrand()
-		}
-		client.CloseIdleConnections()
-		getItems(category, nextPage)
+	if nextPage, ok := paging["next_is_after"].(string); ok && nextPage != "" {
+		return getItems(category, nextPage)
 	}
 
+	fmt.Println("Total Items:", total)
+	total = 0
+	GetBrand()
 	return nil
 }
 
