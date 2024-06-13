@@ -31,8 +31,6 @@ type Price struct {
 }
 
 func saveItemData(title string, images []string, brand string, link string, itemID string, price float64, category string) {
-	//defer db.Close()
-
 	source := "takealot"
 	api := fmt.Sprintf("https://api.takealot.com/rest/v-1-11-0/product-details/PLID%s?platform=desktop&display_credit=true", itemID)
 
@@ -203,7 +201,13 @@ func getItems(category string, nextIsAfter string) error {
 	if err != nil {
 		return fmt.Errorf("failed to execute HTTP request: %v", err)
 	}
-	defer response.Body.Close()
+
+	defer func() {
+		// Close the response body before exiting the function
+		if err := response.Body.Close(); err != nil {
+			log.Printf("Error closing response body: %v", err)
+		}
+	}()
 
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("API returned non-OK status code: %d", response.StatusCode)
@@ -263,7 +267,6 @@ func getItems(category string, nextIsAfter string) error {
 	GetBrand()
 	return nil
 }
-
 func GetBrand() {
 	db = database.ConnectDatabase()
 	category := category.GetRandomCategory()
