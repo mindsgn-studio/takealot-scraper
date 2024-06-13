@@ -1,7 +1,7 @@
 package watch
 
 import (
-	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -9,13 +9,13 @@ import (
 	"net/http"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
+	"github.com/mindsgn-studio/takealot-scraper/database"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var mongoClient *mongo.Client
+var db *sql.DB
+var client = &http.Client{}
+var skip uint64 = 0
 
 type Sources struct {
 	API string `bson:"api"`
@@ -52,50 +52,10 @@ type Price struct {
 }
 
 func saveItemPrice(price float64, title string, brand string, link string) {
-	db := mongoClient.Database("snapprice")
-	itemCollection := db.Collection("items")
-	pricesCollection := db.Collection("prices")
-	twelveHoursAgo := time.Now().Add(-12 * time.Hour)
-
-	filter := map[string]interface{}{
-		"link": link,
-	}
-
-	var result map[string]interface{}
-
-	err := itemCollection.FindOne(context.Background(), filter).Decode(&result)
-	if err != nil {
-		return
-	}
-
-	if id, ok := result["_id"].(primitive.ObjectID); ok {
-		itemID := id.Hex()
-		filter := map[string]interface{}{
-			"itemID": itemID,
-			"date":   map[string]interface{}{"$gt": twelveHoursAgo},
-		}
-
-		var result map[string]interface{}
-		err := pricesCollection.FindOne(context.Background(), filter).Decode(&result)
-		if err != nil {
-			newPrice := &Price{
-				ItemID:   itemID,
-				Date:     time.Now(),
-				Currency: "zar",
-				Price:    price,
-			}
-
-			_, err := pricesCollection.InsertOne(context.Background(), newPrice)
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-		}
-	}
+	return
 }
 
 func getTakealotProduct(api string, title string, link string) {
-	client := &http.Client{}
 	req, err := http.NewRequest(http.MethodGet, api, nil)
 	if err != nil {
 		return
@@ -127,30 +87,43 @@ func getTakealotProduct(api string, title string, link string) {
 	saveItemPrice(price, title, data.Core.Brand, link)
 }
 
-func getList(skip int64) {
-	opts := options.Find()
-	opts.SetLimit(int64(100))
-	opts.SetSkip(int64(skip))
+func getList() {
+	db = database.ConnectDatabase()
+	defer db.Close()
 
-	cursor, err := mongoClient.Database("snapprice").Collection("items").Find(context.Background(), bson.M{"sources.source": "takealot"}, opts)
+	query := `
+		SELECT api, title, link
+		FROM items
+		LIMIT 100
+		OFFSET $1;`
+
+	rows, err := db.Query(query, skip)
 	if err != nil {
-		log.Println("Error finding documents:", err)
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			api   string
+			title string
+			link  string
+		)
+
+		if err := rows.Scan(&api, &title, &link); err != nil {
+			log.Fatal(err)
+		}
+
+		if api != "" {
+			fmt.Println(api, title, link)
+		}
 	}
 
-	var items []Item
-	if err := cursor.All(context.Background(), &items); err != nil {
-		log.Println("Error decoding cursor:", err)
+	if err := rows.Err(); err != nil {
+		log.Fatal(err)
 	}
-
-	for _, item := range items {
-		item.ID.Hex()
-		getTakealotProduct(item.Sources.API, item.Title, item.Link)
-	}
-
-	skip++
-	getList(skip)
 }
 
 func Watch() {
-	getList(0)
+	getList()
 }
