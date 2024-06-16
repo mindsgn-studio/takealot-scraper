@@ -267,6 +267,7 @@ func getItems(category string, nextIsAfter string) error {
 	GetBrand()
 	return nil
 }
+
 func GetBrand() {
 	db = database.ConnectDatabase()
 	category := category.GetRandomCategory()

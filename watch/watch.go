@@ -9,13 +9,18 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/mindsgn-studio/takealot-scraper/category"
 	"github.com/mindsgn-studio/takealot-scraper/database"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 var db *sql.DB
 var client = &http.Client{}
-var skip int = 0
+
+var (
+	itemNumber = 0
+	skip       = 0
+)
 
 type Sources struct {
 	API string `bson:"api"`
@@ -101,24 +106,33 @@ func getTakealotProduct(api string, itemID string) {
 	saveItemPrice(price, itemID)
 }
 
-func getList() {
+func getList(category string) {
 	limit := 100
 	db := database.ConnectDatabase()
 
 	query := `
-		SELECT api, item_id
-		FROM items
-		WHERE source LIKE $1
-		LIMIT $2
-		OFFSET $3;`
+    WITH items_cte AS (
+        SELECT api, item_id
+        FROM items
+        WHERE source LIKE $1 AND category LIKE $2
+        LIMIT $3
+        OFFSET $4
+    ), count_cte AS (
+        SELECT COUNT(*) AS total_count
+        FROM items
+        WHERE source LIKE $1 AND category LIKE $2
+    )
+    SELECT api, item_id, total_count
+    FROM items_cte, count_cte;`
 
-	rows, err := db.Query(query, "takealot", limit, skip*limit)
+	rows, err := db.Query(query, "takealot", category, limit, skip*limit)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer rows.Close()
-
 	defer db.Close()
+
+	var totalCount int
 
 	for rows.Next() {
 		var (
@@ -126,12 +140,20 @@ func getList() {
 			itemID string
 		)
 
-		if err := rows.Scan(&api, &itemID); err != nil {
+		if err := rows.Scan(&api, &itemID, &totalCount); err != nil {
 			log.Fatal(err)
 		}
 
-		if api != "" {
+		itemNumber++
+		if api != "" && itemNumber < totalCount {
+			fmt.Printf("Processing item %d/%d\n", itemNumber, totalCount)
 			getTakealotProduct(api, itemID)
+		} else if itemNumber == totalCount {
+			fmt.Printf("Reached total count of %d items. Stopping further processing.\n", totalCount)
+			itemNumber = 0
+			skip = 0
+			Watch()
+			break
 		}
 	}
 
@@ -139,12 +161,16 @@ func getList() {
 		fmt.Println(err)
 		return
 	}
+
+	skip++
+	getList(category)
 }
 
 func Watch() {
-	for {
-		getList()
-		fmt.Println(skip)
-		skip++
-	}
+	db = database.ConnectDatabase()
+	category := category.GetRandomCategory()
+	fmt.Println("======================================================================")
+	fmt.Println("Category:", category)
+	fmt.Println("======================================================================")
+	getList(category)
 }
