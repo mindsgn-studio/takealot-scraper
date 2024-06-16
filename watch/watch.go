@@ -152,7 +152,7 @@ func getList(category string) {
 			fmt.Printf("Reached total count of %d items. Stopping further processing.\n", totalCount)
 			itemNumber = 0
 			skip = 0
-			// Watch()
+			Watch()
 			break
 		}
 	}
