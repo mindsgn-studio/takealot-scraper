@@ -1,4 +1,0 @@
-package logs
-
-func SaveLog() {
-}
