@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -112,7 +113,7 @@ func saveItemPrice(price float64, title string, link string) {
 	return
 }
 
-func saveItemData(title string, images []string, link string, id string) {
+func saveItemData(title string, images []string, link string, id string, brand string) {
 	db := mongoClient.Database("snapprice")
 	collection := db.Collection("items")
 
@@ -121,12 +122,13 @@ func saveItemData(title string, images []string, link string, id string) {
 	}
 
 	var update = map[string]interface{}{
-		"$set": map[string]interface{}{
+		"$set": bson.M{
 			"title":   title,
 			"images":  images,
 			"link":    link,
+			"brand":   brand,
 			"updated": time.Now(),
-			"sources": map[string]interface{}{
+			"sources": bson.M{
 				"id":     id,
 				"source": "takealot",
 			},
@@ -164,7 +166,7 @@ func extractImage(gallery interface{}) ([]string, error) {
 		fmt.Println("Warning: 'images' field in gallery is a single string, expected an array.")
 		return nil, fmt.Errorf("unexpected type for gallery: string")
 	case []interface{}:
-		images := make([]string, 0, len(gallery)) // Preallocate slice capacity
+		images := make([]string, 0, len(gallery))
 		for _, imageInterface := range gallery {
 			if image, ok := imageInterface.(string); ok {
 				imageURL := strings.ReplaceAll(image, "{size}", "zoom")
@@ -263,7 +265,7 @@ func extractItemData(item map[string]interface{}, category string) error {
 	}
 
 	var plid = strings.ReplaceAll(id, "PLID", "")
-	saveItemData(title, image, link, plid)
+	saveItemData(title, image, link, plid, brand)
 	saveItemPrice(price, title, link)
 	total++
 	items++
@@ -332,6 +334,7 @@ func getItems(item string, nextIsAfter string) {
 
 	for _, result := range results {
 		productMap, ok := result.(map[string]interface{})
+
 		if !ok {
 			fmt.Println("Invalid product format")
 			continue
@@ -366,7 +369,7 @@ func getItems(item string, nextIsAfter string) {
 	fmt.Println("Total Items:", total)
 	fmt.Print("\n")
 	fmt.Print("\n")
-	randomSleep()
+	// randomSleep()
 	total = 0
 	getBrand()
 	return
@@ -378,7 +381,7 @@ func getBrand() {
 		fmt.Println("Error reading brand.txt:", err)
 		return
 	}
-	// Split by comma and trim spaces
+
 	rawBrands := strings.Split(string(data), ",")
 	var brands []string
 	for _, b := range rawBrands {
