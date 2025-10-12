@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -21,394 +23,578 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type JsonObject map[string]interface{}
+const (
+	DefaultDBName        = "snapprice"
+	DefaultItemsColl     = "items"
+	DefaultPricesColl    = "prices"
+	DefaultHTTPTimeout   = 20 * time.Second
+	DefaultDBOpTimeout   = 10 * time.Second
+	PriceDedupWindow     = 2 * time.Hour
+	HTTPMaxRetries       = 3
+	HTTPRetryBaseBackoff = 500 * time.Millisecond
+)
 
-var mongoClient *mongo.Client
-var ctx context.Context
-var total uint64 = 0
-var page uint64 = 1
-var items uint64 = 0
-
-type Price struct {
-	ItemID   string    `bson:"itemID"`
-	Date     time.Time `bson:"date"`
-	Currency string    `bson:"currency"`
-	Price    float64   `bson:"price"`
+type Config struct {
+	MongoURI   string
+	DBName     string
+	ItemsColl  string
+	PricesColl string
+	BrandFile  string
+	UserAgent  string
 }
 
-func connectDatabase() error {
-	ctx = context.Background()
-	err := godotenv.Load()
-	if err != nil {
-		return fmt.Errorf("error loading .env file: %w", err)
-	}
+type Price struct {
+	ID       primitive.ObjectID `bson:"_id,omitempty"`
+	ItemID   primitive.ObjectID `bson:"item_id"`
+	Date     time.Time          `bson:"date"`
+	Currency string             `bson:"currency"`
+	Price    float64            `bson:"price"`
+}
+
+type Scraper struct {
+	cfg         Config
+	mongoClient *mongo.Client
+	db          *mongo.Database
+	httpClient  *http.Client
+	logger      *log.Logger
+	itemsColl   *mongo.Collection
+	pricesColl  *mongo.Collection
+}
+
+type JsonObject map[string]interface{}
+
+func loadConfig() (Config, error) {
+	// load .env if present but don't error if not present
+	_ = godotenv.Load()
 
 	mongoURI := os.Getenv("MONGODB_URI")
-	mongoClient, err = mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return fmt.Errorf("error connecting to MongoDB: %w", err)
+	if mongoURI == "" {
+		return Config{}, errors.New("MONGODB_URI not set")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	db := os.Getenv("MONGO_DB_NAME")
+	if db == "" {
+		db = DefaultDBName
+	}
+
+	brandFile := os.Getenv("BRAND_FILE")
+	if brandFile == "" {
+		brandFile = "brand.txt"
+	}
+
+	ua := os.Getenv("USER_AGENT")
+	if ua == "" {
+		ua = "snapprice-scraper/1.0 (+https://example.com)"
+	}
+
+	return Config{
+		MongoURI:   mongoURI,
+		DBName:     db,
+		ItemsColl:  DefaultItemsColl,
+		PricesColl: DefaultPricesColl,
+		BrandFile:  brandFile,
+		UserAgent:  ua,
+	}, nil
+}
+
+func NewScraper(cfg Config, logger *log.Logger) (*Scraper, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err = mongoClient.Ping(ctx, nil)
+	clientOpts := options.Client().ApplyURI(cfg.MongoURI)
+	client, err := mongo.Connect(ctx, clientOpts)
 	if err != nil {
-		return fmt.Errorf("error pinging MongoDB: %w", err)
+		return nil, fmt.Errorf("mongo connect: %w", err)
+	}
+	// verify
+	if err := client.Ping(ctx, nil); err != nil {
+		_ = client.Disconnect(ctx)
+		return nil, fmt.Errorf("mongo ping: %w", err)
 	}
 
-	fmt.Println("Connected to MongoDB successfully")
+	db := client.Database(cfg.DBName)
+	s := &Scraper{
+		cfg:         cfg,
+		mongoClient: client,
+		db:          db,
+		httpClient: &http.Client{
+			Timeout: DefaultHTTPTimeout,
+		},
+		logger:     logger,
+		itemsColl:  db.Collection(cfg.ItemsColl),
+		pricesColl: db.Collection(cfg.PricesColl),
+	}
+
+	// ensure indexes are present (best-effort)
+	if err := s.ensureIndexes(context.Background()); err != nil {
+		logger.Printf("warning: could not ensure indexes: %v", err)
+	}
+	return s, nil
+}
+
+func (s *Scraper) Close(ctx context.Context) error {
+	return s.mongoClient.Disconnect(ctx)
+}
+
+func (s *Scraper) ensureIndexes(ctx context.Context) error {
+	// items: unique on sources.id + sources.source (upsert uses that)
+	// prices: index on item_id + date (for dedupe queries)
+	_, err := s.itemsColl.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "sources.id", Value: 1}, {Key: "sources.source", Value: 1}},
+		Options: options.Index().SetUnique(false),
+	})
+	if err != nil {
+		return err
+	}
+	_, err = s.pricesColl.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "item_id", Value: 1}, {Key: "date", Value: -1}},
+	})
+	return err
+}
+
+func (s *Scraper) LoadBrands() ([]string, error) {
+	data, err := os.ReadFile(s.cfg.BrandFile)
+	if err != nil {
+		return nil, fmt.Errorf("read brand file: %w", err)
+	}
+	raw := strings.Split(string(data), ",")
+	out := make([]string, 0, len(raw))
+	for _, r := range raw {
+		t := strings.TrimSpace(r)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("no brands found")
+	}
+	return out, nil
+}
+
+func (s *Scraper) Run(ctx context.Context) error {
+	brands, err := s.LoadBrands()
+	if err != nil {
+		return err
+	}
+
+	// seed random once
+	rand.Seed(time.Now().UnixNano())
+
+	for _, brand := range brands {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		s.logger.Printf("START brand=%s", brand)
+		if err := s.ScrapeBrand(ctx, brand); err != nil {
+			s.logger.Printf("error scraping brand=%s: %v", brand, err)
+		}
+		// polite pause between brands
+		time.Sleep(time.Second*1 + time.Duration(rand.Intn(2000))*time.Millisecond/1000)
+	}
 	return nil
 }
 
-func randomSleep() {
-	seconds := rand.Intn(10) + 1
-	time.Sleep(time.Duration(seconds) * time.Second)
-}
-
-func saveItemPrice(price float64, title string, link string) {
-	db := mongoClient.Database("snapprice")
-	itemCollection := db.Collection("items")
-	pricesCollection := db.Collection("prices")
-
-	twoHoursAgo := time.Now().Add(-2 * time.Hour)
-
-	filter := map[string]interface{}{
-		"title": title,
-		"link":  link,
-	}
-
-	var result map[string]interface{}
-
-	err := itemCollection.FindOne(ctx, filter).Decode(&result)
-	if err != nil {
-		return
-	}
-
-	if id, ok := result["_id"].(primitive.ObjectID); ok {
-		itemID := id.Hex()
-		filter := map[string]interface{}{
-			"itemID": itemID,
-			"date":   map[string]interface{}{"$gt": twoHoursAgo},
+func (s *Scraper) ScrapeBrand(ctx context.Context, brand string) error {
+	after := ""
+	page := 1
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
 
-		var result map[string]interface{}
-		err := pricesCollection.FindOne(ctx, filter).Decode(&result)
+		s.logger.Printf("fetching page=%d brand=%s after=%q", page, brand, after)
+		respData, nextAfter, err := s.FetchPage(ctx, brand, after)
 		if err != nil {
-			newPrice := &Price{
-				ItemID:   itemID,
-				Date:     time.Now(),
-				Currency: "zar",
-				Price:    price,
-			}
+			return fmt.Errorf("fetch page: %w", err)
+		}
 
-			_, err := pricesCollection.InsertOne(ctx, newPrice)
-			if err != nil {
-				fmt.Println("failed to save Price")
-				return
+		if err := s.ParseAndPersist(ctx, respData); err != nil {
+			s.logger.Printf("parse error brand=%s page=%d: %v", brand, page, err)
+			// continue to next page — we don't abort on parse errors
+		}
+
+		if nextAfter == "" {
+			break
+		}
+		after = nextAfter
+		page++
+		// polite rate limiting between pages (random small jitter)
+		time.Sleep(time.Millisecond*300 + time.Duration(rand.Intn(700))*time.Millisecond)
+	}
+	s.logger.Printf("finished brand=%s", brand)
+	return nil
+}
+
+func (s *Scraper) FetchPage(parentCtx context.Context, item string, after string) (JsonObject, string, error) {
+	escaped := url.QueryEscape(item)
+	apiURL := fmt.Sprintf("https://api.takealot.com/rest/v-1-14-0/searches/products?newsearch=true&qsearch=%s&track=1&userinit=true&searchbox=true", escaped)
+	if after != "" {
+		apiURL += "&after=" + url.QueryEscape(after)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < HTTPMaxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := HTTPRetryBaseBackoff * time.Duration(1<<(attempt-1))
+			jitter := time.Duration(rand.Intn(300)) * time.Millisecond
+			time.Sleep(backoff + jitter)
+		}
+
+		req, err := http.NewRequestWithContext(parentCtx, http.MethodGet, apiURL, nil)
+		if err != nil {
+			return nil, "", fmt.Errorf("new request: %w", err)
+		}
+		req.Header.Set("User-Agent", s.cfg.UserAgent)
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			s.logger.Printf("http request attempt=%d error=%v", attempt+1, err)
+			continue
+		}
+
+		// ensure body closed
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("status %d", resp.StatusCode)
+			s.logger.Printf("non-200 status attempt=%d code=%d", attempt+1, resp.StatusCode)
+			continue
+		}
+
+		var data JsonObject
+		dec := json.NewDecoder(resp.Body)
+		if err := dec.Decode(&data); err != nil {
+			return nil, "", fmt.Errorf("decode json: %w", err)
+		}
+
+		// extract paging.next_is_after if present
+		nextAfter := ""
+		if sections, ok := data["sections"].(map[string]interface{}); ok {
+			if products, ok := sections["products"].(map[string]interface{}); ok {
+				if paging, ok := products["paging"].(map[string]interface{}); ok {
+					if n, ok := paging["next_is_after"].(string); ok {
+						nextAfter = n
+					}
+				}
 			}
 		}
+
+		return data, nextAfter, nil
 	}
 
-	return
+	return nil, "", fmt.Errorf("http fetch failed: %w", lastErr)
 }
 
-func saveItemData(title string, images []string, link string, id string, brand string) {
-	db := mongoClient.Database("snapprice")
-	collection := db.Collection("items")
-
-	var filter = map[string]interface{}{
-		"sources.id": id,
+func (s *Scraper) ParseAndPersist(ctx context.Context, data JsonObject) error {
+	sections, ok := data["sections"].(map[string]interface{})
+	if !ok {
+		return errors.New("sections missing")
+	}
+	products, ok := sections["products"].(map[string]interface{})
+	if !ok {
+		return errors.New("products missing")
+	}
+	results, ok := products["results"].([]interface{})
+	if !ok {
+		return errors.New("results missing or wrong type")
 	}
 
-	var update = map[string]interface{}{
-		"$set": bson.M{
-			"title":   title,
-			"images":  images,
-			"link":    link,
-			"brand":   brand,
-			"updated": time.Now(),
-			"sources": bson.M{
-				"id":     id,
-				"source": "takealot",
-			},
-		},
-	}
+	for _, r := range results {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 
-	upsert := true
-
-	_, err := collection.UpdateOne(ctx, filter, update, &options.UpdateOptions{Upsert: &upsert})
-	if err != nil {
-		fmt.Println(err)
-		return
+		resultMap, ok := r.(map[string]interface{})
+		if !ok {
+			s.logger.Print("skipping invalid result format")
+			continue
+		}
+		pv, ok := resultMap["product_views"].(map[string]interface{})
+		if !ok {
+			s.logger.Print("missing product_views; skipping")
+			continue
+		}
+		if err := s.extractItemData(ctx, pv); err != nil {
+			s.logger.Printf("extractItemData error: %v", err)
+			// continue to next result
+		}
 	}
+	return nil
 }
 
-func extractPrice(prices interface{}) (float64, error) {
-	switch prices := prices.(type) {
+func toStringSlice(in interface{}) ([]string, error) {
+	switch v := in.(type) {
 	case []interface{}:
-		if len(prices) == 0 {
-			return 0, errors.New("Error: Empty slice provided for prices")
+		out := make([]string, 0, len(v))
+		for _, it := range v {
+			if s, ok := it.(string); ok {
+				out = append(out, s)
+			}
 		}
-
-		if price, ok := prices[0].(float64); ok {
-			return price, nil
-		}
-		return 0, errors.New("Error: Invalid price format in prices")
-	default:
-		return 0, errors.New("Error: Invalid price format in prices")
-	}
-}
-
-func extractImage(gallery interface{}) ([]string, error) {
-	switch gallery := gallery.(type) {
+		return out, nil
 	case string:
-		fmt.Println("Warning: 'images' field in gallery is a single string, expected an array.")
-		return nil, fmt.Errorf("unexpected type for gallery: string")
-	case []interface{}:
-		images := make([]string, 0, len(gallery))
-		for _, imageInterface := range gallery {
-			if image, ok := imageInterface.(string); ok {
-				imageURL := strings.ReplaceAll(image, "{size}", "zoom")
-				images = append(images, imageURL)
-			} else {
-				fmt.Println("Error: Invalid image format in gallery")
-			}
-		}
-		return images, nil
+		// sometimes API may send single string — return single element slice
+		return []string{v}, nil
 	default:
-		fmt.Println("Warning: Unexpected type for 'images' field in gallery")
-		return nil, fmt.Errorf("unexpected type for gallery: %T", gallery)
+		return nil, fmt.Errorf("unexpected image type %T", in)
 	}
 }
 
-func getProductID(products interface{}) (string, error) {
-	switch products := products.(type) {
+func (s *Scraper) getProductIDFromProducts(products interface{}) (string, error) {
+	switch v := products.(type) {
 	case []interface{}:
-		for _, product := range products {
-			if productMap, ok := product.(map[string]interface{}); ok {
-				if id, ok := productMap["id"].(string); ok {
+		for _, p := range v {
+			if pm, ok := p.(map[string]interface{}); ok {
+				if id, ok := pm["id"].(string); ok {
 					return id, nil
 				}
 			}
 		}
 	case map[string]interface{}:
-		if id, ok := products["id"].(string); ok {
+		if id, ok := v["id"].(string); ok {
 			return id, nil
 		}
 	}
-	return "", fmt.Errorf("ID not found in product data")
+	return "", errors.New("product id not found")
 }
 
-func extractItemData(item map[string]interface{}, category string) error {
-	core, coreOK := item["core"].(map[string]interface{})
-	gallery, galleryOK := item["gallery"].(map[string]interface{})
-	buySummary, buySummaryOK := item["buybox_summary"].(map[string]interface{})
-	enhancedEcommerceClick, enhancedEcommerceClickOK := item["enhanced_ecommerce_click"].(map[string]interface{})
+func (s *Scraper) extractItemData(parentCtx context.Context, item map[string]interface{}) error {
+	core, _ := item["core"].(map[string]interface{})
+	gallery, _ := item["gallery"].(map[string]interface{})
+	buySummary, _ := item["buybox_summary"].(map[string]interface{})
+	enhanced, _ := item["enhanced_ecommerce_click"].(map[string]interface{})
 
-	if !coreOK || !galleryOK || !buySummaryOK || !enhancedEcommerceClickOK {
+	if core == nil || gallery == nil || buySummary == nil || enhanced == nil {
+		// insufficient data; skip
 		return nil
 	}
 
-	images, imagesOK := gallery["images"]
-	if !imagesOK {
+	imagesField, ok := gallery["images"]
+	if !ok {
+		return nil
+	}
+	images, err := toStringSlice(imagesField)
+	if err != nil {
+		s.logger.Printf("images parse warning: %v", err)
+	}
+
+	title, _ := core["title"].(string)
+	brand, _ := core["brand"].(string)
+	slug, _ := core["slug"].(string)
+
+	if title == "" || brand == "" || slug == "" {
+		// not enough identifying metadata
 		return nil
 	}
 
-	image, err := extractImage(images)
+	ecommerce, ok := enhanced["ecommerce"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	click, ok := ecommerce["click"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	products, ok := click["products"]
+	if !ok {
+		return nil
+	}
+	id, err := s.getProductIDFromProducts(products)
 	if err != nil {
 		return nil
 	}
-
-	title, titleOK := core["title"].(string)
-	brand, brandOK := core["brand"].(string)
-	slug, slugOK := core["slug"].(string)
-
-	if !titleOK || !brandOK || !slugOK {
-		return nil
-	}
-
-	ecommerce, ecommerceOK := enhancedEcommerceClick["ecommerce"].(map[string]interface{})
-	if !ecommerceOK {
-		return nil
-	}
-
-	click, clickOK := ecommerce["click"].(map[string]interface{})
-	if !clickOK {
-		return nil
-	}
-
-	products, productsOK := click["products"]
-	if !productsOK {
-		return nil
-	}
-
-	id, err := getProductID(products)
-	if err != nil {
-		return nil
-	}
-
+	plid := strings.ReplaceAll(id, "PLID", "")
 	link := fmt.Sprintf("https://www.takealot.com/%s/PLID%s", slug, id)
-	prices, pricesOK := buySummary["prices"]
 
-	if !pricesOK {
+	pricesField, ok := buySummary["prices"]
+	if !ok {
 		return nil
 	}
-
-	price, err := extractPrice(prices)
+	price, err := extractPrice(pricesField)
 	if err != nil {
 		return nil
 	}
 
-	if title == "" || brand == "" || link == "" {
-		return nil
+	// Save item (upsert) and get item _id
+	itemID, err := s.SaveItemData(parentCtx, title, images, link, plid, brand)
+	if err != nil {
+		s.logger.Printf("save item failed: %v", err)
+		return nil // move on — don't abort
 	}
 
-	var plid = strings.ReplaceAll(id, "PLID", "")
-	saveItemData(title, image, link, plid, brand)
-	saveItemPrice(price, title, link)
-	total++
-	items++
-
+	// Save price (dedupe within time window)
+	if err := s.SavePriceIfStale(parentCtx, itemID, price); err != nil {
+		s.logger.Printf("save price failed for item %s: %v", itemID.Hex(), err)
+		// non-fatal
+	}
 	return nil
 }
 
-func getItems(item string, nextIsAfter string) {
-	escapedItem := url.QueryEscape(item)
-	apiURL := fmt.Sprintf("https://api.takealot.com/rest/v-1-14-0/searches/products?newsearch=true&qsearch=%s&track=1&userinit=true&searchbox=true", escapedItem)
-
-	if nextIsAfter != "" {
-		apiURL += "&after=" + nextIsAfter
-	}
-
-	request, err := http.NewRequest(http.MethodGet, apiURL, nil)
-	if err != nil {
-		fmt.Errorf("failed to create HTTP request: %v", err)
-		return
-	}
-
-	request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		fmt.Errorf("failed to execute HTTP request: %v", err)
-		return
-	}
-
-	defer func() {
-		// Close the response body before exiting the function
-		if err := response.Body.Close(); err != nil {
-			log.Printf("Error closing response body: %v", err)
+func extractPrice(prices interface{}) (float64, error) {
+	// the API used slices of floats in example; this function is defensive
+	switch v := prices.(type) {
+	case []interface{}:
+		if len(v) == 0 {
+			return 0, errors.New("empty prices array")
 		}
-	}()
-
-	if response.StatusCode != http.StatusOK {
-		fmt.Errorf("API returned non-OK status code: %d", response.StatusCode)
-		return
-	}
-
-	decoder := json.NewDecoder(response.Body)
-	var data JsonObject
-	if err := decoder.Decode(&data); err != nil {
-		fmt.Errorf("failed to decode JSON: %v", err)
-		return
-	}
-
-	sections, ok := data["sections"].(map[string]interface{})
-	if !ok {
-		fmt.Errorf("sections not found in response")
-		return
-	}
-
-	products, ok := sections["products"].(map[string]interface{})
-	if !ok {
-		fmt.Errorf("products not found in sections")
-		return
-	}
-
-	results, ok := products["results"].([]interface{})
-	if !ok {
-		fmt.Errorf("results not found in products")
-		return
-	}
-
-	for _, result := range results {
-		productMap, ok := result.(map[string]interface{})
-
-		if !ok {
-			fmt.Println("Invalid product format")
-			continue
+		// first element might be float64 or number-like
+		switch n := v[0].(type) {
+		case float64:
+			return n, nil
+		case int:
+			return float64(n), nil
+		case int32:
+			return float64(n), nil
+		case int64:
+			return float64(n), nil
+		case string:
+			// try parse
+			f, err := strconvParseFloat(n)
+			if err != nil {
+				return 0, fmt.Errorf("price parse error: %w", err)
+			}
+			return f, nil
+		default:
+			return 0, fmt.Errorf("unsupported price type %T", n)
 		}
-
-		productViews, ok := productMap["product_views"].(map[string]interface{})
-		if !ok {
-			fmt.Println("Missing or invalid 'product_views' field")
-			continue
-		}
-
-		if err := extractItemData(productViews, item); err != nil {
-			fmt.Printf("Error extracting item data: %v\n", err)
-		}
+	case float64:
+		return v, nil
+	case string:
+		return strconvParseFloat(v)
+	default:
+		return 0, fmt.Errorf("unsupported prices field type %T", v)
 	}
-
-	paging, ok := products["paging"].(map[string]interface{})
-	if !ok {
-		fmt.Errorf("paging not found in products")
-		return
-	}
-
-	nextIsAfter, nextPageExists := paging["next_is_after"].(string)
-	if nextPageExists && nextIsAfter != "" {
-		page++
-		fmt.Print("items: ", items, "\tpage: ", page)
-		fmt.Print("\n")
-		items = 0
-		getItems(item, nextIsAfter)
-	}
-
-	fmt.Println("Total Items:", total)
-	fmt.Print("\n")
-	fmt.Print("\n")
-	// randomSleep()
-	total = 0
-	getBrand()
-	return
 }
 
-func getBrand() {
-	data, err := ioutil.ReadFile("brand.txt")
-	if err != nil {
-		fmt.Println("Error reading brand.txt:", err)
-		return
+func strconvParseFloat(s string) (float64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("empty price string")
 	}
+	// attempt to remove non numeric characters if present
+	s = strings.ReplaceAll(s, ",", "")
+	return strconv.ParseFloat(s, 64)
+}
 
-	rawBrands := strings.Split(string(data), ",")
-	var brands []string
-	for _, b := range rawBrands {
-		trimmed := strings.TrimSpace(b)
-		if trimmed != "" {
-			brands = append(brands, trimmed)
+func (s *Scraper) SaveItemData(parentCtx context.Context, title string, images []string, link string, id string, brand string) (primitive.ObjectID, error) {
+	// Use FindOneAndUpdate with Upsert to get the resulting document; filter by source id + source name.
+	// Create a short timeout for the DB operation
+	ctx, cancel := context.WithTimeout(parentCtx, DefaultDBOpTimeout)
+	defer cancel()
+
+	filter := bson.M{
+		"sources.id":     id,
+		"sources.source": "takealot",
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"title":   title,
+			"images":  images,
+			"link":    link,
+			"brand":   brand,
+			"updated": time.Now().UTC(),
+		},
+		"$setOnInsert": bson.M{
+			"created": time.Now().UTC(),
+		},
+	}
+	opts := options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)
+
+	var updatedDoc bson.M
+	err := s.itemsColl.FindOneAndUpdate(ctx, filter, update, opts).Decode(&updatedDoc)
+	if err != nil {
+		// For some drivers, decode into nil on upsert can error; fallback to FindOne
+		if err == mongo.ErrNoDocuments {
+			var doc bson.M
+			if err2 := s.itemsColl.FindOne(ctx, filter).Decode(&doc); err2 == nil {
+				updatedDoc = doc
+			} else {
+				return primitive.NilObjectID, fmt.Errorf("find after upsert failed: %w / %v", err, err2)
+			}
+		} else {
+			return primitive.NilObjectID, fmt.Errorf("findoneandupdate: %w", err)
 		}
 	}
-	if len(brands) == 0 {
-		fmt.Println("No brands found in brand.txt")
-		return
+
+	// Ensure we return ObjectID
+	if oid, ok := updatedDoc["_id"].(primitive.ObjectID); ok {
+		return oid, nil
 	}
-	rand.Seed(time.Now().UnixNano())
-	brand := brands[rand.Intn(len(brands))]
-	fmt.Println("================================")
-	fmt.Println(brand)
-	fmt.Println("================================")
-	page = 0
-	items = 0
-	getItems(brand, "")
+	// If the driver returned _id as primitive.ObjectID but wrapped differently, try conversion
+	if idVal, ok := updatedDoc["_id"].(string); ok {
+		oid, err := primitive.ObjectIDFromHex(idVal)
+		if err == nil {
+			return oid, nil
+		}
+	}
+	return primitive.NilObjectID, errors.New("could not resolve item _id after upsert")
+}
+
+func (s *Scraper) SavePriceIfStale(parentCtx context.Context, itemID primitive.ObjectID, priceVal float64) error {
+	ctx, cancel := context.WithTimeout(parentCtx, DefaultDBOpTimeout)
+	defer cancel()
+
+	threshold := time.Now().Add(-PriceDedupWindow)
+	filter := bson.M{
+		"item_id": itemID,
+		"date":    bson.M{"$gt": threshold},
+	}
+
+	count, err := s.pricesColl.CountDocuments(ctx, filter)
+	if err != nil {
+		return fmt.Errorf("count recent prices: %w", err)
+	}
+	if count > 0 {
+		// skip insertion to avoid spamming small changes
+		return nil
+	}
+
+	doc := Price{
+		ItemID:   itemID,
+		Date:     time.Now().UTC(),
+		Currency: "zar",
+		Price:    priceVal,
+	}
+	_, err = s.pricesColl.InsertOne(ctx, doc)
+	if err != nil {
+		return fmt.Errorf("insert price: %w", err)
+	}
+	return nil
 }
 
 func main() {
-	err := connectDatabase()
+	logger := log.New(os.Stdout, "[scraper] ", log.LstdFlags|log.Lmsgprefix)
+
+	cfg, err := loadConfig()
 	if err != nil {
-		panic(err)
+		logger.Fatalf("config: %v", err)
 	}
 
-	getBrand()
+	scraper, err := NewScraper(cfg, logger)
+	if err != nil {
+		logger.Fatalf("new scraper: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := scraper.Close(ctx); err != nil {
+			logger.Printf("error disconnecting mongo: %v", err)
+		}
+	}()
+
+	// graceful shutdown
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := scraper.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Printf("run error: %v", err)
+	}
+	logger.Print("scraper finished")
 }
