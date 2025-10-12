@@ -248,7 +248,7 @@ func extractItemData(item map[string]interface{}, category string) error {
 		return nil
 	}
 
-	link := fmt.Sprintf("https://www.takealot.com/%s/%s", slug, strings.ReplaceAll(id, "PLID", ""))
+	link := fmt.Sprintf("https://www.takealot.com/%s/PLID%s", slug, id)
 	prices, pricesOK := buySummary["prices"]
 
 	if !pricesOK {
