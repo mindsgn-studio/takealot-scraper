@@ -157,6 +157,7 @@ func (s *Scraper) LoadBrands() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read brand file: %w", err)
 	}
+
 	raw := strings.Split(string(data), ",")
 	out := make([]string, 0, len(raw))
 	for _, r := range raw {
@@ -165,9 +166,14 @@ func (s *Scraper) LoadBrands() ([]string, error) {
 			out = append(out, t)
 		}
 	}
+
 	if len(out) == 0 {
 		return nil, errors.New("no brands found")
 	}
+
+	rand.Seed(time.Now().UnixNano())
+	rand.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+
 	return out, nil
 }
 
@@ -214,7 +220,6 @@ func (s *Scraper) ScrapeBrand(ctx context.Context, brand string) error {
 
 		if err := s.ParseAndPersist(ctx, respData); err != nil {
 			s.logger.Printf("parse error brand=%s page=%d: %v", brand, page, err)
-			// continue to next page — we don't abort on parse errors
 		}
 
 		if nextAfter == "" {
@@ -222,7 +227,6 @@ func (s *Scraper) ScrapeBrand(ctx context.Context, brand string) error {
 		}
 		after = nextAfter
 		page++
-		// polite rate limiting between pages (random small jitter)
 		time.Sleep(time.Millisecond*300 + time.Duration(rand.Intn(700))*time.Millisecond)
 	}
 	s.logger.Printf("finished brand=%s", brand)
@@ -547,6 +551,7 @@ func (s *Scraper) SavePriceIfStale(parentCtx context.Context, itemID primitive.O
 		"date":    bson.M{"$gt": threshold},
 	}
 
+	// if there's a recent price, skip
 	count, err := s.pricesColl.CountDocuments(ctx, filter)
 	if err != nil {
 		return fmt.Errorf("count recent prices: %w", err)
