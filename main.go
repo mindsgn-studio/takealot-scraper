@@ -137,8 +137,6 @@ func (s *Scraper) Close(ctx context.Context) error {
 }
 
 func (s *Scraper) ensureIndexes(ctx context.Context) error {
-	// items: unique on sources.id + sources.source (upsert uses that)
-	// prices: index on item_id + date (for dedupe queries)
 	_, err := s.itemsColl.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "sources.id", Value: 1}, {Key: "sources.source", Value: 1}},
 		Options: options.Index().SetUnique(false),
@@ -152,38 +150,42 @@ func (s *Scraper) ensureIndexes(ctx context.Context) error {
 	return err
 }
 
-func (s *Scraper) LoadBrands() ([]string, error) {
+func (s *Scraper) LoadBrands(brands []string) ([]string, error) {
+
 	data, err := os.ReadFile(s.cfg.BrandFile)
 	if err != nil {
 		return nil, fmt.Errorf("read brand file: %w", err)
 	}
 
 	raw := strings.Split(string(data), ",")
-	out := make([]string, 0, len(raw))
 	for _, r := range raw {
 		t := strings.TrimSpace(r)
 		if t != "" {
-			out = append(out, t)
+			brands = append(brands, t)
 		}
 	}
 
-	if len(out) == 0 {
+	if len(brands) == 0 {
 		return nil, errors.New("no brands found")
 	}
 
 	rand.Seed(time.Now().UnixNano())
-	rand.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+	rand.Shuffle(len(brands), func(i, j int) { brands[i], brands[j] = brands[j], brands[i] })
 
-	return out, nil
+	return brands, nil
 }
 
 func (s *Scraper) Run(ctx context.Context) error {
-	brands, err := s.LoadBrands()
+	brandList, err := s.Items(ctx)
+	if err != nil {
+		return fmt.Errorf("load items: %w", err)
+	}
+
+	brands, err := s.LoadBrands(brandList)
 	if err != nil {
 		return err
 	}
 
-	// seed random once
 	rand.Seed(time.Now().UnixNano())
 
 	for _, brand := range brands {
@@ -196,7 +198,7 @@ func (s *Scraper) Run(ctx context.Context) error {
 		if err := s.ScrapeBrand(ctx, brand); err != nil {
 			s.logger.Printf("error scraping brand=%s: %v", brand, err)
 		}
-		// polite pause between brands
+
 		time.Sleep(time.Second*1 + time.Duration(rand.Intn(2000))*time.Millisecond/1000)
 	}
 	return nil
@@ -442,13 +444,12 @@ func (s *Scraper) extractItemData(parentCtx context.Context, item map[string]int
 }
 
 func extractPrice(prices interface{}) (float64, error) {
-	// the API used slices of floats in example; this function is defensive
 	switch v := prices.(type) {
 	case []interface{}:
 		if len(v) == 0 {
 			return 0, errors.New("empty prices array")
 		}
-		// first element might be float64 or number-like
+
 		switch n := v[0].(type) {
 		case float64:
 			return n, nil
@@ -459,7 +460,6 @@ func extractPrice(prices interface{}) (float64, error) {
 		case int64:
 			return float64(n), nil
 		case string:
-			// try parse
 			f, err := strconvParseFloat(n)
 			if err != nil {
 				return 0, fmt.Errorf("price parse error: %w", err)
@@ -482,14 +482,12 @@ func strconvParseFloat(s string) (float64, error) {
 	if s == "" {
 		return 0, errors.New("empty price string")
 	}
-	// attempt to remove non numeric characters if present
+
 	s = strings.ReplaceAll(s, ",", "")
 	return strconv.ParseFloat(s, 64)
 }
 
 func (s *Scraper) SaveItemData(parentCtx context.Context, title string, images []string, link string, id string, brand string) (primitive.ObjectID, error) {
-	// Use FindOneAndUpdate with Upsert to get the resulting document; filter by source id + source name.
-	// Create a short timeout for the DB operation
 	ctx, cancel := context.WithTimeout(parentCtx, DefaultDBOpTimeout)
 	defer cancel()
 
@@ -551,13 +549,11 @@ func (s *Scraper) SavePriceIfStale(parentCtx context.Context, itemID primitive.O
 		"date":    bson.M{"$gt": threshold},
 	}
 
-	// if there's a recent price, skip
 	count, err := s.pricesColl.CountDocuments(ctx, filter)
 	if err != nil {
 		return fmt.Errorf("count recent prices: %w", err)
 	}
 	if count > 0 {
-		// skip insertion to avoid spamming small changes
 		return nil
 	}
 
@@ -572,6 +568,59 @@ func (s *Scraper) SavePriceIfStale(parentCtx context.Context, itemID primitive.O
 		return fmt.Errorf("insert price: %w", err)
 	}
 	return nil
+}
+
+func uniqueStrings(input []string) []string {
+	seen := make(map[string]struct{}, len(input))
+	out := make([]string, 0, len(input))
+	for _, v := range input {
+		if _, exists := seen[v]; !exists {
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (s *Scraper) Items(ctx context.Context) ([]string, error) {
+	s.logger.Printf("Started watching items")
+	db := s.mongoClient.Database("snapprice")
+	coll := db.Collection("items")
+	var brands []string
+	items := 0
+
+	filter := bson.M{}
+
+	cursor, err := coll.Find(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("find items with null brand: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	for cursor.Next(ctx) {
+		var doc struct {
+			Title string `bson:"title"`
+			Brand string `bson:"brand"`
+		}
+		if err := cursor.Decode(&doc); err != nil {
+			s.logger.Printf("decode error: %v", err)
+			continue
+		}
+
+		if doc.Title != "" {
+			brands = append(brands, doc.Brand)
+			items++
+		}
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, fmt.Errorf("cursor error: %w", err)
+	}
+
+	uniqueBrands := uniqueStrings(brands)
+
+	s.logger.Printf("stopped watching items: %d", len(uniqueBrands))
+	return uniqueBrands, nil
 }
 
 func main() {
@@ -594,7 +643,6 @@ func main() {
 		}
 	}()
 
-	// graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
