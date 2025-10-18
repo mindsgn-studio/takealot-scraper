@@ -515,8 +515,6 @@ func (s *Scraper) SaveItemData(parentCtx context.Context, title string, images [
 	ctx, cancel := context.WithTimeout(parentCtx, DefaultDBOpTimeout)
 	defer cancel()
 
-	fmt.Println(images)
-
 	filter := bson.M{
 		"sources.id":     id,
 		"sources.source": "takealot",
