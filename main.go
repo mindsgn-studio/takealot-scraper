@@ -335,21 +335,44 @@ func (s *Scraper) ParseAndPersist(ctx context.Context, data JsonObject) error {
 	return nil
 }
 
+func extractImage(imageList interface{}) ([]string, error) {
+	switch imageList := imageList.(type) {
+	case string:
+		fmt.Println("Warning: 'images' field in gallery is a single string, expected an array.")
+		return nil, fmt.Errorf("unexpected type for gallery: string")
+	case []interface{}:
+		images := make([]string, 0, len(imageList))
+		for _, imageInterface := range imageList {
+			if image, ok := imageInterface.(string); ok {
+				imageURL := strings.ReplaceAll(image, "{size}", "zoom")
+				images = append(images, imageURL)
+			} else {
+				fmt.Println("Error: Invalid image format in gallery")
+			}
+		}
+		return images, nil
+	default:
+		fmt.Println("Warning: Unexpected type for 'images' field in gallery")
+		return nil, fmt.Errorf("unexpected type for gallery: %T", imageList)
+	}
+}
+
 func toStringSlice(in interface{}) ([]string, error) {
 	switch v := in.(type) {
 	case []interface{}:
 		out := make([]string, 0, len(v))
 		for _, it := range v {
 			if s, ok := it.(string); ok {
-				out = append(out, s)
+				imageURL := strings.ReplaceAll(s, "{size}", "zoom")
+				out = append(out, imageURL)
 			}
 		}
+
 		return out, nil
 	case string:
-		// sometimes API may send single string — return single element slice
 		return []string{v}, nil
 	default:
-		return nil, fmt.Errorf("unexpected image type %T", in)
+		return []string{}, fmt.Errorf("unexpected image type %T", in)
 	}
 }
 
@@ -378,7 +401,6 @@ func (s *Scraper) extractItemData(parentCtx context.Context, item map[string]int
 	enhanced, _ := item["enhanced_ecommerce_click"].(map[string]interface{})
 
 	if core == nil || gallery == nil || buySummary == nil || enhanced == nil {
-		// insufficient data; skip
 		return nil
 	}
 
@@ -386,6 +408,7 @@ func (s *Scraper) extractItemData(parentCtx context.Context, item map[string]int
 	if !ok {
 		return nil
 	}
+
 	images, err := toStringSlice(imagesField)
 	if err != nil {
 		s.logger.Printf("images parse warning: %v", err)
@@ -396,7 +419,6 @@ func (s *Scraper) extractItemData(parentCtx context.Context, item map[string]int
 	slug, _ := core["slug"].(string)
 
 	if title == "" || brand == "" || slug == "" {
-		// not enough identifying metadata
 		return nil
 	}
 
@@ -416,13 +438,15 @@ func (s *Scraper) extractItemData(parentCtx context.Context, item map[string]int
 	if err != nil {
 		return nil
 	}
+
 	plid := strings.ReplaceAll(id, "PLID", "")
-	link := fmt.Sprintf("https://www.takealot.com/%s/PLID%s", slug, id)
+	link := fmt.Sprintf("https://www.takealot.com/%s/%s", slug, id)
 
 	pricesField, ok := buySummary["prices"]
 	if !ok {
 		return nil
 	}
+
 	price, err := extractPrice(pricesField)
 	if err != nil {
 		return nil
@@ -490,6 +514,8 @@ func strconvParseFloat(s string) (float64, error) {
 func (s *Scraper) SaveItemData(parentCtx context.Context, title string, images []string, link string, id string, brand string) (primitive.ObjectID, error) {
 	ctx, cancel := context.WithTimeout(parentCtx, DefaultDBOpTimeout)
 	defer cancel()
+
+	fmt.Println(images)
 
 	filter := bson.M{
 		"sources.id":     id,
