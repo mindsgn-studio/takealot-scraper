@@ -1,4 +1,4 @@
-package takealot
+package main
 
 import (
 	"context"
@@ -16,7 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
+	"github.com/mindsgn-studio/takealot-scraper/internal/config"
+	"github.com/mindsgn-studio/takealot-scraper/internal/model"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -34,25 +35,8 @@ const (
 	HTTPRetryBaseBackoff = 500 * time.Millisecond
 )
 
-type Config struct {
-	MongoURI   string
-	DBName     string
-	ItemsColl  string
-	PricesColl string
-	BrandFile  string
-	UserAgent  string
-}
-
-type Price struct {
-	ID       primitive.ObjectID `bson:"_id,omitempty"`
-	ItemID   primitive.ObjectID `bson:"item_id"`
-	Date     time.Time          `bson:"date"`
-	Currency string             `bson:"currency"`
-	Price    float64            `bson:"price"`
-}
-
 type Scraper struct {
-	cfg         Config
+	cfg         model.Config
 	mongoClient *mongo.Client
 	db          *mongo.Database
 	httpClient  *http.Client
@@ -63,41 +47,7 @@ type Scraper struct {
 
 type JsonObject map[string]interface{}
 
-func loadConfig() (Config, error) {
-	// load .env if present but don't error if not present
-	_ = godotenv.Load()
-
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return Config{}, errors.New("MONGODB_URI not set")
-	}
-
-	db := os.Getenv("MONGO_DB_NAME")
-	if db == "" {
-		db = DefaultDBName
-	}
-
-	brandFile := os.Getenv("BRAND_FILE")
-	if brandFile == "" {
-		brandFile = "brand.txt"
-	}
-
-	ua := os.Getenv("USER_AGENT")
-	if ua == "" {
-		ua = "snapprice-scraper/1.0 (+https://example.com)"
-	}
-
-	return Config{
-		MongoURI:   mongoURI,
-		DBName:     db,
-		ItemsColl:  DefaultItemsColl,
-		PricesColl: DefaultPricesColl,
-		BrandFile:  brandFile,
-		UserAgent:  ua,
-	}, nil
-}
-
-func NewScraper(cfg Config, logger *log.Logger) (*Scraper, error) {
+func NewScraper(cfg model.Config, logger *log.Logger) (*Scraper, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -558,7 +508,7 @@ func (s *Scraper) SavePriceIfStale(parentCtx context.Context, itemID primitive.O
 		return nil
 	}
 
-	doc := Price{
+	doc := model.Price{
 		ItemID:   itemID,
 		Date:     time.Now().UTC(),
 		Currency: "zar",
@@ -624,10 +574,10 @@ func (s *Scraper) Items(ctx context.Context) ([]string, error) {
 	return uniqueBrands, nil
 }
 
-func Start() {
+func main() {
 	logger := log.New(os.Stdout, "[Takealot] ", log.LstdFlags|log.Lmsgprefix)
 
-	cfg, err := loadConfig()
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		logger.Fatalf("config: %v", err)
 	}

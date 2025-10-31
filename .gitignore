@@ -6,3 +6,4 @@ dist
 tmp
 node_modules
 takealot-scraper
+bin
