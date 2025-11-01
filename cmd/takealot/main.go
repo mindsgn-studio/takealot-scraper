@@ -488,27 +488,13 @@ func (s *Scraper) SavePriceIfStale(parentCtx context.Context, itemID primitive.O
 	ctx, cancel := context.WithTimeout(parentCtx, DefaultDBOpTimeout)
 	defer cancel()
 
-	threshold := time.Now().Add(-PriceDedupWindow)
-	filter := bson.M{
-		"item_id": itemID,
-		"date":    bson.M{"$gt": threshold},
-	}
-
-	count, err := s.pricesColl.CountDocuments(ctx, filter)
-	if err != nil {
-		return fmt.Errorf("count recent prices: %w", err)
-	}
-	if count > 0 {
-		return nil
-	}
-
 	doc := model.Price{
 		ItemID:   itemID,
 		Date:     time.Now().UTC(),
 		Currency: "zar",
 		Price:    priceVal,
 	}
-	_, err = s.pricesColl.InsertOne(ctx, doc)
+	_, err := s.pricesColl.InsertOne(ctx, doc)
 	if err != nil {
 		return fmt.Errorf("insert price: %w", err)
 	}
@@ -546,7 +532,6 @@ func (s *Scraper) Items(ctx context.Context) ([]string, error) {
 
 	for cursor.Next(ctx) {
 		var doc struct {
-			Title string `bson:"title"`
 			Brand string `bson:"brand"`
 		}
 		if err := cursor.Decode(&doc); err != nil {
@@ -554,7 +539,7 @@ func (s *Scraper) Items(ctx context.Context) ([]string, error) {
 			continue
 		}
 
-		if doc.Title != "" {
+		if doc.Brand != "" {
 			brands = append(brands, doc.Brand)
 			items++
 		}

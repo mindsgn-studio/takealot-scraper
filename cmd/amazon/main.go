@@ -88,7 +88,6 @@ func (s *Scraper) Items(ctx context.Context) ([]string, error) {
 
 	for cursor.Next(ctx) {
 		var doc struct {
-			Title string `bson:"title"`
 			Brand string `bson:"brand"`
 		}
 		if err := cursor.Decode(&doc); err != nil {
@@ -96,7 +95,7 @@ func (s *Scraper) Items(ctx context.Context) ([]string, error) {
 			continue
 		}
 
-		if doc.Title != "" {
+		if doc.Brand != "" {
 			brands = append(brands, doc.Brand)
 			items++
 		}
@@ -290,7 +289,6 @@ func (s *Scraper) ScrapeBrand(ctx context.Context, brand string) error {
 			if itemID != "" {
 				id, _ := s.SaveItemData(ctx, title, images, itemLink, itemID, "")
 				s.SavePriceIfStale(ctx, id, price)
-				s.logger.Print("\nsaved item: ", id)
 			}
 		})
 
