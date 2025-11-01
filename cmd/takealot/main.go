@@ -30,7 +30,7 @@ const (
 	DefaultPricesColl    = "prices"
 	DefaultHTTPTimeout   = 20 * time.Second
 	DefaultDBOpTimeout   = 10 * time.Second
-	PriceDedupWindow     = 2 * time.Hour
+	PriceDedupWindow     = 1 * time.Hour
 	HTTPMaxRetries       = 3
 	HTTPRetryBaseBackoff = 500 * time.Millisecond
 )
@@ -74,7 +74,6 @@ func NewScraper(cfg model.Config, logger *log.Logger) (*Scraper, error) {
 		pricesColl: db.Collection(cfg.PricesColl),
 	}
 
-	// ensure indexes are present (best-effort)
 	if err := s.ensureIndexes(context.Background()); err != nil {
 		logger.Printf("warning: could not ensure indexes: %v", err)
 	}
@@ -100,7 +99,6 @@ func (s *Scraper) ensureIndexes(ctx context.Context) error {
 }
 
 func (s *Scraper) LoadBrands(brands []string) ([]string, error) {
-
 	data, err := os.ReadFile(s.cfg.BrandFile)
 	if err != nil {
 		return nil, fmt.Errorf("read brand file: %w", err)
@@ -227,7 +225,6 @@ func (s *Scraper) FetchPage(parentCtx context.Context, item string, after string
 			return nil, "", fmt.Errorf("decode json: %w", err)
 		}
 
-		// extract paging.next_is_after if present
 		nextAfter := ""
 		if sections, ok := data["sections"].(map[string]interface{}); ok {
 			if products, ok := sections["products"].(map[string]interface{}); ok {
@@ -278,7 +275,6 @@ func (s *Scraper) ParseAndPersist(ctx context.Context, data JsonObject) error {
 		}
 		if err := s.extractItemData(ctx, pv); err != nil {
 			s.logger.Printf("extractItemData error: %v", err)
-			// continue to next result
 		}
 	}
 	return nil
@@ -463,7 +459,6 @@ func (s *Scraper) SaveItemData(parentCtx context.Context, title string, images [
 	var updatedDoc bson.M
 	err := s.itemsColl.FindOneAndUpdate(ctx, filter, update, opts).Decode(&updatedDoc)
 	if err != nil {
-		// For some drivers, decode into nil on upsert can error; fallback to FindOne
 		if err == mongo.ErrNoDocuments {
 			var doc bson.M
 			if err2 := s.itemsColl.FindOne(ctx, filter).Decode(&doc); err2 == nil {
@@ -476,11 +471,10 @@ func (s *Scraper) SaveItemData(parentCtx context.Context, title string, images [
 		}
 	}
 
-	// Ensure we return ObjectID
 	if oid, ok := updatedDoc["_id"].(primitive.ObjectID); ok {
 		return oid, nil
 	}
-	// If the driver returned _id as primitive.ObjectID but wrapped differently, try conversion
+
 	if idVal, ok := updatedDoc["_id"].(string); ok {
 		oid, err := primitive.ObjectIDFromHex(idVal)
 		if err == nil {
@@ -540,9 +534,11 @@ func (s *Scraper) Items(ctx context.Context) ([]string, error) {
 	var brands []string
 	items := 0
 
-	filter := bson.M{}
+	filter := bson.M{
+		"brand": bson.M{"$exists": true, "$ne": ""},
+	}
 
-	cursor, err := coll.Find(ctx, filter)
+	cursor, err := coll.Find(ctx, filter, options.Find().SetProjection(bson.M{"brand": 1}))
 	if err != nil {
 		return nil, fmt.Errorf("find items with null brand: %w", err)
 	}

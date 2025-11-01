@@ -1,6 +1,6 @@
 module github.com/mindsgn-studio/takealot-scraper
 
-go 1.23.0
+go 1.24.0
 
 require (
 	github.com/gocolly/colly v1.2.0
@@ -31,6 +31,7 @@ require (
 	golang.org/x/net v0.39.0 // indirect
 	golang.org/x/sync v0.13.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
 	google.golang.org/protobuf v1.26.0 // indirect
 )
