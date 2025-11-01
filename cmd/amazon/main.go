@@ -288,6 +288,7 @@ func (s *Scraper) ScrapeBrand(ctx context.Context, brand string) error {
 
 			if itemID != "" {
 				id, _ := s.SaveItemData(ctx, title, images, itemLink, itemID, "")
+				s.logger.Print("saved Item", id)
 				s.SavePriceIfStale(ctx, id, price)
 			}
 		})

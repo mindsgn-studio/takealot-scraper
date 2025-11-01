@@ -375,17 +375,15 @@ func (s *Scraper) extractItemData(parentCtx context.Context, item map[string]int
 		return nil
 	}
 
-	// Save item (upsert) and get item _id
 	itemID, err := s.SaveItemData(parentCtx, title, images, link, plid, brand)
 	if err != nil {
 		s.logger.Printf("save item failed: %v", err)
-		return nil // move on — don't abort
+		return nil
 	}
+	s.logger.Print("saved Item", id)
 
-	// Save price (dedupe within time window)
 	if err := s.SavePriceIfStale(parentCtx, itemID, price); err != nil {
 		s.logger.Printf("save price failed for item %s: %v", itemID.Hex(), err)
-		// non-fatal
 	}
 	return nil
 }
