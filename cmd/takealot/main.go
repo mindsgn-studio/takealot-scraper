@@ -93,7 +93,7 @@ func (s *Scraper) ensureIndexes(ctx context.Context) error {
 		return err
 	}
 	_, err = s.pricesColl.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "item_id", Value: 1}, {Key: "date", Value: -1}},
+		Keys: bson.D{{Key: "itemID", Value: 1}, {Key: "date", Value: -1}},
 	})
 	return err
 }

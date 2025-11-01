@@ -8,7 +8,7 @@ import (
 
 type Price struct {
 	ID       primitive.ObjectID `bson:"_id,omitempty"`
-	ItemID   primitive.ObjectID `bson:"item_id"`
+	ItemID   primitive.ObjectID `bson:"itemID"`
 	Date     time.Time          `bson:"date"`
 	Currency string             `bson:"currency"`
 	Price    float64            `bson:"price"`

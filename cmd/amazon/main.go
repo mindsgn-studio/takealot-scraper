@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -64,7 +63,7 @@ func (s *Scraper) ensureIndexes(ctx context.Context) error {
 		return err
 	}
 	_, err = s.pricesColl.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "item_id", Value: 1}, {Key: "date", Value: -1}},
+		Keys: bson.D{{Key: "itemID", Value: 1}, {Key: "date", Value: -1}},
 	})
 	return err
 }
@@ -109,67 +108,6 @@ func (s *Scraper) Items(ctx context.Context) ([]string, error) {
 
 	s.logger.Printf("stopped watching items: %d", len(uniqueBrands))
 	return uniqueBrands, nil
-}
-
-func (s *Scraper) FetchPage(parentCtx context.Context, item string, after string) (JsonObject, string, error) {
-	escaped := url.QueryEscape(item)
-	apiURL := fmt.Sprintf("https://api.takealot.com/rest/v-1-14-0/searches/products?newsearch=true&qsearch=%s&track=1&userinit=true&searchbox=true", escaped)
-	if after != "" {
-		apiURL += "&after=" + url.QueryEscape(after)
-	}
-
-	var lastErr error
-	for attempt := 0; attempt < HTTPMaxRetries; attempt++ {
-		if attempt > 0 {
-			backoff := HTTPRetryBaseBackoff * time.Duration(1<<(attempt-1))
-			jitter := time.Duration(rand.Intn(300)) * time.Millisecond
-			time.Sleep(backoff + jitter)
-		}
-
-		req, err := http.NewRequestWithContext(parentCtx, http.MethodGet, apiURL, nil)
-		if err != nil {
-			return nil, "", fmt.Errorf("new request: %w", err)
-		}
-		req.Header.Set("User-Agent", s.cfg.UserAgent)
-
-		resp, err := s.httpClient.Do(req)
-		if err != nil {
-			lastErr = err
-			s.logger.Printf("http request attempt=%d error=%v", attempt+1, err)
-			continue
-		}
-
-		// ensure body closed
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("status %d", resp.StatusCode)
-			s.logger.Printf("non-200 status attempt=%d code=%d", attempt+1, resp.StatusCode)
-			continue
-		}
-
-		var data JsonObject
-		dec := json.NewDecoder(resp.Body)
-		if err := dec.Decode(&data); err != nil {
-			return nil, "", fmt.Errorf("decode json: %w", err)
-		}
-
-		// extract paging.next_is_after if present
-		nextAfter := ""
-		if sections, ok := data["sections"].(map[string]interface{}); ok {
-			if products, ok := sections["products"].(map[string]interface{}); ok {
-				if paging, ok := products["paging"].(map[string]interface{}); ok {
-					if n, ok := paging["next_is_after"].(string); ok {
-						nextAfter = n
-					}
-				}
-			}
-		}
-
-		return data, nextAfter, nil
-	}
-
-	return nil, "", fmt.Errorf("http fetch failed: %w", lastErr)
 }
 
 func (s *Scraper) SaveItemData(parentCtx context.Context, title string, images []string, link string, id string, brand string) (primitive.ObjectID, error) {
@@ -272,7 +210,6 @@ func (s *Scraper) ScrapeBrand(ctx context.Context, brand string) error {
 		h.ForEach("div.sg-col-4-of-24.sg-col-4-of-12.s-result-item.s-asin.sg-col-4-of-16.sg-col.s-widget-spacing-small.sg-col-4-of-20", func(_ int, cardElement *colly.HTMLElement) {
 
 			itemID = cardElement.Attr("data-asin")
-
 			title = cardElement.ChildText("h2.a-size-base-plus.a-color-base.a-text-normal")
 
 			cardElement.ForEach("a.a-link-normal.s-no-outline", func(_ int, h *colly.HTMLElement) {

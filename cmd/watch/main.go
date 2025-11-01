@@ -22,6 +22,7 @@ const (
 	DefaultDBName        = "snapprice"
 	DefaultItemsColl     = "items"
 	DefaultPricesColl    = "prices"
+	DefaultBrandColl     = "brand"
 	DefaultHTTPTimeout   = 20 * time.Second
 	DefaultDBOpTimeout   = 10 * time.Second
 	PriceDedupWindow     = 2 * time.Hour
@@ -34,13 +35,14 @@ type Config struct {
 	DBName     string
 	ItemsColl  string
 	PricesColl string
+	brandColl  string
 	BrandFile  string
 	UserAgent  string
 }
 
 type Price struct {
 	ID       primitive.ObjectID `bson:"_id,omitempty"`
-	ItemID   primitive.ObjectID `bson:"item_id"`
+	ItemID   primitive.ObjectID `bson:"itemID"`
 	Date     time.Time          `bson:"date"`
 	Currency string             `bson:"currency"`
 	Price    float64            `bson:"price"`
@@ -54,6 +56,7 @@ type Scraper struct {
 	logger      *log.Logger
 	itemsColl   *mongo.Collection
 	pricesColl  *mongo.Collection
+	brandColl   *mongo.Collection
 }
 
 type JsonObject map[string]interface{}
@@ -78,7 +81,7 @@ func loadConfig() (Config, error) {
 
 	ua := os.Getenv("USER_AGENT")
 	if ua == "" {
-		ua = "snapprice-scraper/1.0 (+https://example.com)"
+		ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 	}
 
 	return Config{
@@ -86,6 +89,7 @@ func loadConfig() (Config, error) {
 		DBName:     db,
 		ItemsColl:  DefaultItemsColl,
 		PricesColl: DefaultPricesColl,
+		brandColl:  DefaultBrandColl,
 		BrandFile:  brandFile,
 		UserAgent:  ua,
 	}, nil
@@ -117,6 +121,7 @@ func NewScraper(cfg Config, logger *log.Logger) (*Scraper, error) {
 		logger:     logger,
 		itemsColl:  db.Collection(cfg.ItemsColl),
 		pricesColl: db.Collection(cfg.PricesColl),
+		brandColl:  db.Collection(cfg.brandColl),
 	}
 
 	if err := s.ensureIndexes(context.Background()); err != nil {
@@ -138,67 +143,87 @@ func (s *Scraper) ensureIndexes(ctx context.Context) error {
 		return err
 	}
 	_, err = s.pricesColl.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "item_id", Value: 1}, {Key: "date", Value: -1}},
+		Keys: bson.D{{Key: "itemID", Value: 1}, {Key: "date", Value: -1}},
 	})
 	return err
 }
 
+func (s *Scraper) SaveBrand(parentCtx context.Context, brand string) {
+	ctx, cancel := context.WithTimeout(parentCtx, DefaultDBOpTimeout)
+	defer cancel()
+
+	filter := bson.M{"brand": brand}
+	update := bson.M{
+		"$setOnInsert": bson.M{
+			"brand": brand,
+		},
+	}
+
+	opts := options.Update().SetUpsert(true)
+	_, err := s.brandColl.UpdateOne(ctx, filter, update, opts)
+	if err != nil {
+		s.logger.Printf("upsert brand: %w", err)
+	}
+
+	s.logger.Printf("upsert brand: ")
+}
+
+func (s *Scraper) FixAll(parentCtx context.Context) {
+	s.logger.Printf("Started fixing items")
+	db := s.mongoClient.Database("snapprice")
+	coll := db.Collection("prices")
+	filter := bson.M{}
+	update := bson.M{"$rename": bson.M{"item_id": "itemID"}}
+
+	result, err := coll.UpdateMany(parentCtx, filter, update)
+	if err != nil {
+		log.Fatalf("Failed to rename field: %v", err)
+	}
+
+	fmt.Printf("Modified %d documents\n", result.ModifiedCount)
+}
+
 func (s *Scraper) Run(ctx context.Context) error {
-	s.Items(ctx)
+	s.FixAll(ctx)
 	return nil
 }
 
-func uniqueStrings(input []string) []string {
-	seen := make(map[string]struct{}, len(input))
-	out := make([]string, 0, len(input))
-	for _, v := range input {
-		if _, exists := seen[v]; !exists {
-			seen[v] = struct{}{}
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-func (s *Scraper) Items(ctx context.Context) ([]string, error) {
+func (s *Scraper) Items(ctx context.Context) error {
 	s.logger.Printf("Started watching items")
 	db := s.mongoClient.Database("snapprice")
 	coll := db.Collection("items")
 	var brands []string
-	items := 0
 
 	filter := bson.M{}
 
-	cursor, err := coll.Find(ctx, filter)
+	cursor, err := coll.Find(ctx, filter, options.Find().SetProjection(bson.M{"brand": 1}))
 	if err != nil {
-		return nil, fmt.Errorf("find items with null brand: %w", err)
+		return fmt.Errorf("find items with null brand: %w", err)
 	}
 	defer cursor.Close(ctx)
 
 	for cursor.Next(ctx) {
 		var doc struct {
-			Title string `bson:"title"`
 			Brand string `bson:"brand"`
 		}
+
 		if err := cursor.Decode(&doc); err != nil {
 			s.logger.Printf("decode error: %v", err)
 			continue
 		}
 
-		if doc.Title != "" {
-			brands = append(brands, doc.Brand)
-			items++
+		if doc.Brand != "" {
+			s.logger.Print(doc.Brand)
+			s.SaveBrand(ctx, doc.Brand)
 		}
 	}
 
 	if err := cursor.Err(); err != nil {
-		return nil, fmt.Errorf("cursor error: %w", err)
+		return fmt.Errorf("cursor error: %w", err)
 	}
 
-	uniqueBrands := uniqueStrings(brands)
-
-	s.logger.Printf("stopped watching items: %d", len(uniqueBrands))
-	return uniqueBrands, nil
+	s.logger.Printf("stopped watching items: %d", len(brands))
+	return nil
 }
 
 func main() {
