@@ -184,7 +184,7 @@ func (s *Scraper) FixAll(parentCtx context.Context) {
 }
 
 func (s *Scraper) Run(ctx context.Context) error {
-	s.FixAll(ctx)
+	s.Items(ctx)
 	return nil
 }
 
