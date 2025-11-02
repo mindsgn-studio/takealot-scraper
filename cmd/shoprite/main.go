@@ -35,8 +35,6 @@ const (
 	HTTPRetryBaseBackoff = 500 * time.Millisecond
 )
 
-var totalPages int
-
 type Scraper struct {
 	cfg         model.Config
 	mongoClient *mongo.Client
