@@ -4,6 +4,9 @@ run-amazon:
 run-takealot:
 	go run ./cmd/takealot
 
+run-shoprite:
+	go run ./cmd/shoprite
+
 run-watch:
 	go run ./cmd/watch
 
@@ -12,4 +15,5 @@ build:
 	go mod download
 	go build -o bin/takealot ./cmd/takealot
 	go build -o bin/amazon ./cmd/amazon
+	go build -o bin/shoprite ./cmd/shoprite
 	go build -o bin/watch ./cmd/watch
