@@ -10,6 +10,9 @@ run-shoprite:
 run-watch:
 	go run ./cmd/watch
 
+run-sync:
+	go run ./cmd/sync
+
 build:
 	go mod tidy
 	go mod download

@@ -154,6 +154,7 @@ func (s *Scraper) SaveItemData(parentCtx context.Context, title string, images [
 			return oid, nil
 		}
 	}
+
 	return primitive.NilObjectID, errors.New("could not resolve item _id after upsert")
 }
 
