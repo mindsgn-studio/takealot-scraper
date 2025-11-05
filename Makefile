@@ -20,3 +20,4 @@ build:
 	go build -o bin/amazon ./cmd/amazon
 	go build -o bin/shoprite ./cmd/shoprite
 	go build -o bin/watch ./cmd/watch
+	go build -o bin/sync ./cmd/sync
