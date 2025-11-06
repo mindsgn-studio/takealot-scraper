@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -63,9 +62,22 @@ func main() {
 	defer mongoClient.Disconnect(context.Background())
 
 	var wg sync.WaitGroup
+	wg.Add(2)
 
-	migrateItems(mongoClient, pgDB, &wg)
-	migratePrices(mongoClient, pgDB, &wg)
+	go func() {
+		defer wg.Done()
+		if err := migrateItems(mongoClient, pgDB); err != nil {
+			log.Println("migrateItems failed:", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if err := migratePrices(mongoClient, pgDB); err != nil {
+			log.Println("migratePrices failed:", err)
+		}
+	}()
+
 	wg.Wait()
 
 	log.Println("Migration completed successfully!")
@@ -121,7 +133,7 @@ func connectPostgres() (*sql.DB, error) {
 	return db, nil
 }
 
-func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB, wg *sync.WaitGroup) error {
+func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB) error {
 	log.Println("Migrating items collection...")
 
 	collection := mongoClient.Database("snapprice").Collection("items")
@@ -138,8 +150,6 @@ func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB, wg *sync.WaitGroup) e
 			log.Printf("Error decoding item: %v", err)
 			continue
 		}
-
-		imagesStr := strings.Join(item.Images, ",")
 
 		query := `
 			INSERT INTO items (uuid, title, brand, link, source_name, images)
@@ -159,7 +169,7 @@ func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB, wg *sync.WaitGroup) e
 			item.Brand,
 			item.Link,
 			item.Sources.Source,
-			imagesStr,
+			item.Images[0],
 		)
 
 		if err != nil {
@@ -177,7 +187,7 @@ func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB, wg *sync.WaitGroup) e
 	return nil
 }
 
-func migratePrices(mongoClient *mongo.Client, pgDB *sql.DB, wg *sync.WaitGroup) error {
+func migratePrices(mongoClient *mongo.Client, pgDB *sql.DB) error {
 	log.Println("Migrating prices collection...")
 
 	collection := mongoClient.Database("snapprice").Collection("prices")
