@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -61,11 +62,13 @@ func main() {
 	}
 	defer mongoClient.Disconnect(context.Background())
 
-	if err := migrateItems(mongoClient, pgDB); err != nil {
+	var wg sync.WaitGroup
+
+	if err := migrateItems(mongoClient, pgDB, &wg); err != nil {
 		log.Printf("Error migrating items: %v", err)
 	}
 
-	if err := migratePrices(mongoClient, pgDB); err != nil {
+	if err := migratePrices(mongoClient, pgDB, &wg); err != nil {
 		log.Printf("Error migrating prices: %v", err)
 	}
 
@@ -122,7 +125,7 @@ func connectPostgres() (*sql.DB, error) {
 	return db, nil
 }
 
-func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB) error {
+func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB, wg *sync.WaitGroup) error {
 	log.Println("Migrating items collection...")
 
 	collection := mongoClient.Database("snapprice").Collection("items")
@@ -178,7 +181,7 @@ func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB) error {
 	return nil
 }
 
-func migratePrices(mongoClient *mongo.Client, pgDB *sql.DB) error {
+func migratePrices(mongoClient *mongo.Client, pgDB *sql.DB, wg *sync.WaitGroup) error {
 	log.Println("Migrating prices collection...")
 
 	collection := mongoClient.Database("snapprice").Collection("prices")
@@ -196,10 +199,7 @@ func migratePrices(mongoClient *mongo.Client, pgDB *sql.DB) error {
 			continue
 		}
 
-		query := `
-			INSERT INTO prices (item_id, price, date)
-			VALUES ($1, $2, $3)
-		`
+		query := `INSERT INTO prices (item_id, price, date) VALUES ($1, $2, $3)`
 
 		_, err := pgDB.Exec(query, price.ItemID, price.Price, price.Date)
 		if err != nil {
