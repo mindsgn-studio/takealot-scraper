@@ -152,14 +152,14 @@ func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB) error {
 		}
 
 		query := `
-			INSERT INTO items (uuid, title, brand, link, source_name, images)
+			INSERT INTO items (uuid, title, brand, link, source_name, image)
 			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (uuid) DO UPDATE SET
 				title = EXCLUDED.title,
 				brand = EXCLUDED.brand,
 				link = EXCLUDED.link,
 				source_name = EXCLUDED.source_name,
-				images = EXCLUDED.images,
+				image = EXCLUDED.image,
 				updated_at = CURRENT_TIMESTAMP
 		`
 
