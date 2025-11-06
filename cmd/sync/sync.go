@@ -64,13 +64,9 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	if err := migrateItems(mongoClient, pgDB, &wg); err != nil {
-		log.Printf("Error migrating items: %v", err)
-	}
-
-	if err := migratePrices(mongoClient, pgDB, &wg); err != nil {
-		log.Printf("Error migrating prices: %v", err)
-	}
+	migrateItems(mongoClient, pgDB, &wg)
+	migratePrices(mongoClient, pgDB, &wg)
+	wg.Wait()
 
 	log.Println("Migration completed successfully!")
 }
