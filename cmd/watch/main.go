@@ -2,255 +2,343 @@ package main
 
 import (
 	"context"
-	"errors"
+	"database/sql"
 	"fmt"
 	"log"
-	"net/http"
+	"math"
 	"os"
-	"os/signal"
-	"syscall"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
+	"firebase.google.com/go/v4/messaging"
+	fcm "github.com/appleboy/go-fcm"
+	"github.com/gocolly/colly"
 	"github.com/joho/godotenv"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	_ "github.com/lib/pq"
+	"github.com/sideshow/apns2"
+	"github.com/sideshow/apns2/token"
 )
 
-const (
-	DefaultDBName        = "snapprice"
-	DefaultItemsColl     = "items"
-	DefaultPricesColl    = "prices"
-	DefaultBrandColl     = "brand"
-	DefaultHTTPTimeout   = 20 * time.Second
-	DefaultDBOpTimeout   = 10 * time.Second
-	PriceDedupWindow     = 2 * time.Hour
-	HTTPMaxRetries       = 3
-	HTTPRetryBaseBackoff = 500 * time.Millisecond
-)
-
-type Config struct {
-	MongoURI   string
-	DBName     string
-	ItemsColl  string
-	PricesColl string
-	brandColl  string
-	BrandFile  string
-	UserAgent  string
+type Watch struct {
+	Item_ID sql.NullString `json:"item_id"`
+	Token   sql.NullString `json:"token`
+	Device  sql.NullString `json:"device`
 }
 
-type Price struct {
-	ID       primitive.ObjectID `bson:"_id,omitempty"`
-	ItemID   primitive.ObjectID `bson:"itemID"`
-	Date     time.Time          `bson:"date"`
-	Currency string             `bson:"currency"`
-	Price    float64            `bson:"price"`
+type Item struct {
+	UUID        string `json:"uuid"`
+	Link        string `json:"link"`
+	Source_Name string `json:"source_name"`
 }
 
-type Scraper struct {
-	cfg         Config
-	mongoClient *mongo.Client
-	db          *mongo.Database
-	httpClient  *http.Client
-	logger      *log.Logger
-	itemsColl   *mongo.Collection
-	pricesColl  *mongo.Collection
-	brandColl   *mongo.Collection
-}
-
-type JsonObject map[string]interface{}
-
-func loadConfig() (Config, error) {
-	_ = godotenv.Load()
-
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return Config{}, errors.New("MONGODB_URI not set")
-	}
-
-	db := os.Getenv("MONGO_DB_NAME")
-	if db == "" {
-		db = DefaultDBName
-	}
-
-	brandFile := os.Getenv("BRAND_FILE")
-	if brandFile == "" {
-		brandFile = "brand.txt"
-	}
-
-	ua := os.Getenv("USER_AGENT")
-	if ua == "" {
-		ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-	}
-
-	return Config{
-		MongoURI:   mongoURI,
-		DBName:     db,
-		ItemsColl:  DefaultItemsColl,
-		PricesColl: DefaultPricesColl,
-		brandColl:  DefaultBrandColl,
-		BrandFile:  brandFile,
-		UserAgent:  ua,
-	}, nil
-}
-
-func NewScraper(cfg Config, logger *log.Logger) (*Scraper, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	clientOpts := options.Client().ApplyURI(cfg.MongoURI)
-	client, err := mongo.Connect(ctx, clientOpts)
-	if err != nil {
-		return nil, fmt.Errorf("mongo connect: %w", err)
-	}
-
-	if err := client.Ping(ctx, nil); err != nil {
-		_ = client.Disconnect(ctx)
-		return nil, fmt.Errorf("mongo ping: %w", err)
-	}
-
-	db := client.Database(cfg.DBName)
-	s := &Scraper{
-		cfg:         cfg,
-		mongoClient: client,
-		db:          db,
-		httpClient: &http.Client{
-			Timeout: DefaultHTTPTimeout,
-		},
-		logger:     logger,
-		itemsColl:  db.Collection(cfg.ItemsColl),
-		pricesColl: db.Collection(cfg.PricesColl),
-		brandColl:  db.Collection(cfg.brandColl),
-	}
-
-	if err := s.ensureIndexes(context.Background()); err != nil {
-		logger.Printf("warning: could not ensure indexes: %v", err)
-	}
-	return s, nil
-}
-
-func (s *Scraper) Close(ctx context.Context) error {
-	return s.mongoClient.Disconnect(ctx)
-}
-
-func (s *Scraper) ensureIndexes(ctx context.Context) error {
-	_, err := s.itemsColl.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "sources.id", Value: 1}, {Key: "sources.source", Value: 1}},
-		Options: options.Index().SetUnique(false),
-	})
-	if err != nil {
-		return err
-	}
-	_, err = s.pricesColl.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{{Key: "itemID", Value: 1}, {Key: "date", Value: -1}},
-	})
-	return err
-}
-
-func (s *Scraper) SaveBrand(parentCtx context.Context, brand string) {
-	ctx, cancel := context.WithTimeout(parentCtx, DefaultDBOpTimeout)
-	defer cancel()
-
-	filter := bson.M{"brand": brand}
-	update := bson.M{
-		"$setOnInsert": bson.M{
-			"brand": brand,
-		},
-	}
-
-	opts := options.Update().SetUpsert(true)
-	_, err := s.brandColl.UpdateOne(ctx, filter, update, opts)
-	if err != nil {
-		s.logger.Printf("upsert brand: %w", err)
-	}
-
-	s.logger.Printf("upsert brand: ")
-}
-
-func (s *Scraper) FixAll(parentCtx context.Context) {
-	s.logger.Printf("Started fixing items")
-	db := s.mongoClient.Database("snapprice")
-	coll := db.Collection("prices")
-	filter := bson.M{}
-	update := bson.M{"$rename": bson.M{"item_id": "itemID"}}
-
-	result, err := coll.UpdateMany(parentCtx, filter, update)
-	if err != nil {
-		log.Fatalf("Failed to rename field: %v", err)
-	}
-
-	fmt.Printf("Modified %d documents\n", result.ModifiedCount)
-}
-
-func (s *Scraper) Run(ctx context.Context) error {
-	s.Items(ctx)
-	return nil
-}
-
-func (s *Scraper) Items(ctx context.Context) error {
-	s.logger.Printf("Started watching items")
-	db := s.mongoClient.Database("snapprice")
-	coll := db.Collection("items")
-	var brands []string
-
-	filter := bson.M{}
-
-	cursor, err := coll.Find(ctx, filter, options.Find().SetProjection(bson.M{"brand": 1}))
-	if err != nil {
-		return fmt.Errorf("find items with null brand: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	for cursor.Next(ctx) {
-		var doc struct {
-			Brand string `bson:"brand"`
-		}
-
-		if err := cursor.Decode(&doc); err != nil {
-			s.logger.Printf("decode error: %v", err)
-			continue
-		}
-
-		if doc.Brand != "" {
-			s.logger.Print(doc.Brand)
-			s.SaveBrand(ctx, doc.Brand)
-		}
-	}
-
-	if err := cursor.Err(); err != nil {
-		return fmt.Errorf("cursor error: %w", err)
-	}
-
-	s.logger.Printf("stopped watching items: %d", len(brands))
-	return nil
+type Prices struct {
+	Item_ID string    `json:"item_id"`
+	Price   float64   `json:"price"`
+	Date    time.Time `json:"date"`
 }
 
 func main() {
-	logger := log.New(os.Stdout, "[scraper] ", log.LstdFlags|log.Lmsgprefix)
+	log.Println("Starting MongoDB to PostgreSQL migration...")
 
-	cfg, err := loadConfig()
+	pgDB, err := connectPostgres()
 	if err != nil {
-		logger.Fatalf("config: %v", err)
+		log.Fatal("Failed to connect to PostgreSQL:", err)
 	}
+	defer pgDB.Close()
 
-	scraper, err := NewScraper(cfg, logger)
-	if err != nil {
-		logger.Fatalf("new scraper: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := scraper.Close(ctx); err != nil {
-			logger.Printf("error disconnecting mongo: %v", err)
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		if err := getList(pgDB); err != nil {
+			log.Println("migrateItems failed:", err)
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	wg.Wait()
 
-	if err := scraper.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		logger.Printf("run error: %v", err)
+	log.Println("Migration completed successfully!")
+}
+
+func connectPostgres() (*sql.DB, error) {
+	_ = godotenv.Load()
+	pgURI := os.Getenv("POSTGRES_URI")
+	if pgURI == "" {
+		return nil, fmt.Errorf("POSTGRES_URI environment variable not set")
 	}
-	logger.Print("scraper finished")
+
+	db, err := sql.Open("postgres", pgURI)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := db.Ping(); err != nil {
+		return nil, err
+	}
+
+	log.Println("Connected to PostgreSQL")
+	return db, nil
+}
+
+func getCurrent(prices []Prices) float64 {
+	if len(prices) == 0 {
+		return 0
+	}
+	return prices[len(prices)-1].Price
+}
+
+func getPrevious(prices []Prices) float64 {
+	if len(prices) < 2 {
+		return 0
+	}
+	return prices[len(prices)-2].Price
+}
+
+func lowestPrice(prices []Prices) float64 {
+	if len(prices) == 0 {
+		return 0
+	}
+	lowest := prices[0].Price
+	for _, p := range prices {
+		if p.Price < lowest {
+			lowest = p.Price
+		}
+	}
+	return lowest
+}
+
+func highestPrice(prices []Prices) float64 {
+	if len(prices) == 0 {
+		return 0
+	}
+	highest := prices[0].Price
+	for _, p := range prices {
+		if p.Price > highest {
+			highest = p.Price
+		}
+	}
+	return highest
+}
+
+func averagePrice(prices []Prices) float64 {
+	if len(prices) == 0 {
+		return 0
+	}
+	var total float64
+	for _, p := range prices {
+		total += p.Price
+	}
+	return total / float64(len(prices))
+}
+
+func priceChange(prices []Prices) float64 {
+	if len(prices) < 2 {
+		return 0
+	}
+
+	current := getCurrent(prices)
+	previous := getPrevious(prices)
+
+	if previous == 0 {
+		return 0
+	}
+
+	change := ((current - previous) / previous) * 100
+	return math.Round(change*100) / 100
+}
+
+func androidpushhNotification(DeviceToken string) {
+	fmt.Println(DeviceToken)
+	ctx := context.Background()
+	client, err := fcm.NewClient(
+		ctx,
+		fcm.WithCredentialsFile("./google-services.json"),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	resp, err := client.Send(
+		ctx,
+		&messaging.Message{
+			Token: DeviceToken,
+			Data: map[string]string{
+				"foo": "bar",
+			},
+		},
+	)
+	if err != nil {
+		fmt.Println("Send error:", err)
+		return
+	}
+	fmt.Println("Success:", resp.SuccessCount, "Failure:", resp.FailureCount)
+}
+
+func iosPushNotification(DeviceToken string) {
+	authKey, err := token.AuthKeyFromFile("./AuthKey_CCKC4GS5P8.p8")
+	if err != nil {
+		log.Fatal("token error:", err)
+	}
+
+	token := &token.Token{
+		AuthKey: authKey,
+		KeyID:   "CCKC4GS5P8",
+		TeamID:  "B3U8UM2966",
+	}
+
+	client := apns2.NewTokenClient(token)
+	notification := &apns2.Notification{}
+	notification.DeviceToken = DeviceToken
+	notification.Topic = "mindsgn.studio.snap-price"
+	notification.Payload = []byte(`{"aps":{"alert":"Hello!"}}`)
+
+	res, err := client.Push(notification)
+
+	if err != nil {
+		log.Fatal("Error:", err)
+	}
+
+	fmt.Printf("%v %v %v\n", res.StatusCode, res.ApnsID, res.Reason)
+}
+
+func analyse(pgDB *sql.DB, currentPrice float64, uuid string) {
+	query := `SELECT item_id, price, date FROM prices WHERE item_id = $1 ORDER BY date ASC`
+
+	rows, err := pgDB.Query(query, uuid)
+	if err != nil {
+		log.Printf(err.Error())
+	}
+	defer rows.Close()
+
+	var prices []Prices
+	for rows.Next() {
+		var price Prices
+		if err := rows.Scan(&price.Item_ID, &price.Price, &price.Date); err != nil {
+			log.Println("Error scanning price:", err)
+		}
+		prices = append(prices, price)
+
+		if len(prices) == 0 {
+			log.Println("No prices found for item:", uuid)
+			return
+		}
+	}
+
+	fmt.Println("Current Price:", getCurrent(prices))
+	fmt.Println("Previous Price:", getPrevious(prices))
+	fmt.Println("Lowest Price:", lowestPrice(prices))
+	fmt.Println("Highest Price:", highestPrice(prices))
+	fmt.Println("Average Price:", averagePrice(prices))
+	fmt.Println("Price Change (%):", priceChange(prices))
+}
+
+func savePrice(pgDB *sql.DB, currentPrice float64, uuid string) {
+	insertQuery := `INSERT INTO prices (item_id, price, date) VALUES ($1, $2, $3)`
+
+	result, err := pgDB.Exec(insertQuery, uuid, currentPrice, time.Now())
+	if err != nil {
+		log.Printf("Error inserting price for item %s: %v", uuid, err)
+	}
+
+	fmt.Println(result.RowsAffected())
+}
+
+func extractText(text string) float64 {
+	re := regexp.MustCompile(`R[\s\p{Zs}]*([\d\s\p{Zs}]+,\d{2})`)
+	matches := re.FindStringSubmatch(text)
+	if len(matches) > 1 {
+		price := matches[1]
+		price = strings.Map(func(r rune) rune {
+			if r == ' ' || r == '\u00A0' {
+				return -1
+			}
+			return r
+		}, price)
+		fmtPrice, err := strconv.ParseFloat(price, 64)
+		if err != nil {
+			return 0
+		}
+
+		return fmtPrice
+	}
+	return 0
+}
+
+func OpenPageAmazon(pgDB *sql.DB, link string, uuid string) {
+	collyClient := colly.NewCollector()
+	collyClient.UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+	collyClient.OnHTML("body", func(body *colly.HTMLElement) {
+		body.ForEach("div.a-section.a-spacing-none.aok-align-center.aok-relative", func(index int, element *colly.HTMLElement) {
+			currentPrice := extractText(element.Text)
+			savePrice(pgDB, currentPrice, uuid)
+			analyse(pgDB, currentPrice, uuid)
+		})
+	})
+
+	collyClient.Visit(link)
+	collyClient.Wait()
+}
+
+func OpenPageTakealot(pgDB *sql.DB, link string, uuid string) {}
+
+func assessItem(pgDB *sql.DB, uuid string) {
+	query := `SELECT link, uuid, source_name FROM items WHERE uuid = $1`
+
+	rows, err := pgDB.Query(query, uuid)
+	if err != nil {
+		log.Printf(err.Error())
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item Item
+		if err := rows.Scan(&item.Link, &item.UUID, &item.Source_Name); err != nil {
+			log.Println("Error scanning price:", err)
+		}
+
+		if item.Source_Name == "takealot" {
+			OpenPageTakealot(pgDB, item.Link, uuid)
+		} else if item.Source_Name == "amazon" {
+			OpenPageAmazon(pgDB, item.Link, uuid)
+		}
+	}
+}
+
+func getList(pgDB *sql.DB) error {
+	query := `
+		SELECT item_id, token, device FROM watch
+	`
+
+	rows, err := pgDB.Query(query)
+	if err != nil {
+		fmt.Printf(err.Error())
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var watch Watch
+		if err := rows.Scan(&watch.Item_ID, &watch.Token, &watch.Device); err != nil {
+			log.Println("Error scanning item:", err)
+			continue
+		}
+
+		assessItem(pgDB, watch.Item_ID.String)
+
+		/*
+			if watch.Token.Valid && watch.Device.Valid && watch.Device.String == "ios" {
+				iosPushNotification(watch.Token.String)
+			}
+
+			if watch.Token.Valid && watch.Device.Valid && watch.Device.String == "android" {
+				androidpushhNotification(watch.Token.String)
+			}
+		*/
+	}
+
+	return nil
 }

@@ -179,7 +179,7 @@ func (s *Scraper) SavePriceIfStale(parentCtx context.Context, itemID primitive.O
 	return nil
 }
 
-func extractPrice(text string) (float64, error) {
+func ExtractPrice(text string) (float64, error) {
 	re := regexp.MustCompile(`R[ \xA0]?([\d \xA0]+,\d{2})`)
 	match := re.FindStringSubmatch(text)
 	if len(match) < 2 {
@@ -217,7 +217,7 @@ func (s *Scraper) ScrapeBrand(ctx context.Context, brand string) error {
 			})
 
 			text := cardElement.ChildText("span.a-offscreen")
-			price, _ = extractPrice(text)
+			price, _ = ExtractPrice(text)
 
 			cardElement.ForEach("img.s-image", func(_ int, h *colly.HTMLElement) {
 				images = append(images, h.Attr("src"))

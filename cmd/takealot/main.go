@@ -107,7 +107,7 @@ func (s *Scraper) LoadBrands(brands []string) ([]string, error) {
 	raw := strings.Split(string(data), ",")
 	for _, r := range raw {
 		t := strings.TrimSpace(r)
-		if t != "" {
+		if t != "" && t != "." {
 			brands = append(brands, t)
 		}
 	}
@@ -537,7 +537,7 @@ func (s *Scraper) Items(ctx context.Context) ([]string, error) {
 			continue
 		}
 
-		if doc.Brand != "" {
+		if doc.Brand != "" && doc.Brand != "." {
 			brands = append(brands, doc.Brand)
 			items++
 		}

@@ -205,7 +205,14 @@ func migratePrices(mongoClient *mongo.Client, pgDB *sql.DB) error {
 			continue
 		}
 
-		query := `INSERT INTO prices (item_id, price, date) VALUES ($1, $2, $3)`
+		query := `
+			INSERT INTO prices (item_id, price, date) VALUES ($1, $2, $3)
+			ON CONFLICT (date) DO UPDATE SET
+				item_id = EXCLUDED.item_id,
+				price = EXCLUDED.price,
+				date = EXCLUDED.date,
+				updated_at = CURRENT_TIMESTAMP
+		`
 
 		_, err := pgDB.Exec(query, price.ItemID, price.Price, price.Date)
 		if err != nil {
