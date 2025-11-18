@@ -208,7 +208,6 @@ func (s *Scraper) ScrapeBrand(ctx context.Context, brand string) error {
 
 	collyClient.OnHTML("div.s-result-list.s-search-results.sg-row", func(h *colly.HTMLElement) {
 		h.ForEach("div.sg-col-4-of-24.sg-col-4-of-12.s-result-item.s-asin.sg-col-4-of-16.sg-col.s-widget-spacing-small.sg-col-4-of-20", func(_ int, cardElement *colly.HTMLElement) {
-
 			itemID = cardElement.Attr("data-asin")
 			title = cardElement.ChildText("h2.a-size-base-plus.a-color-base.a-text-normal")
 
