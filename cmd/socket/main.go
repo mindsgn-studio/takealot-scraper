@@ -6,29 +6,79 @@ import (
 	"log"
 	"os"
 
+	"github.com/ably/ably-go/ably"
 	"github.com/mindsgn-studio/takealot-scraper/internal/core"
 )
 
 func main() {
 	logger := log.New(os.Stdout, "[tracker] ", log.LstdFlags|log.Lmsgprefix)
 
-	newItem, err := core.OpenPageTakealot("https://www.takealot.com/midea-6kg-front-loader-1000rpm-titanium/PLID93155744")
+	mongoClient, err := core.ConnectMongo()
 	if err != nil {
-		fmt.Println(err)
-	} else {
-		log.Println("Starting MongoDB to PostgreSQL migration...")
-		mongoClient, err := core.ConnectMongo()
-		if err != nil {
-			logger.Fatal("Failed to connect to MongoDB:", err)
-		}
-		defer mongoClient.Disconnect(context.Background())
-
-		newEntry, err := core.SaveItemData(mongoClient, newItem.Title, newItem.Images, newItem.Link, newItem.ID, newItem.Brand)
-		if err != nil {
-			logger.Fatal("Failed to save", err)
-		}
-		fmt.Println(newEntry)
+		logger.Fatal("Failed to connect to MongoDB:", err)
 	}
+	defer mongoClient.Disconnect(context.Background())
+
+	client, err := ably.NewRealtime(
+		ably.WithKey("2CIRYw.fvWv8A:Dg4mmFzMik-V7K8QMXCxY6c27b8VXBI9yqcV08qQn-E"),
+		ably.WithClientID("local-server"),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	connStateChan := make(chan ably.ConnectionStateChange, 1)
+	client.Connection.On(ably.ConnectionEventConnected, func(change ably.ConnectionStateChange) {
+		connStateChan <- change
+	})
+	select {
+	case <-connStateChan:
+		fmt.Println("Made my first connection!")
+	case <-context.Background().Done():
+		log.Fatal("Context cancelled before connection established")
+	}
+
+	channel := client.Channels.Get("items")
+
+	unsubscribe, err := channel.SubscribeAll(context.Background(), func(msg *ably.Message) {
+		switch v := msg.Data.(type) {
+		case string:
+			channelName := "private:" + msg.ClientID
+			privateChanel := client.Channels.Get(channelName)
+
+			newItem, err := core.OpenPageTakealot(v)
+			if err != nil {
+				fmt.Println(err)
+				return
+			} else {
+				fmt.Println("saving data")
+				newEntry, err := core.SaveItemData(mongoClient, newItem.Title, newItem.Images, newItem.Link, newItem.ID, newItem.Brand)
+				if err != nil {
+					logger.Fatal("Failed to save", err)
+				}
+				core.SavePrice(mongoClient, newItem.Current_Price, string(newEntry.Hex()))
+
+				newItem.UUID = string(newEntry.Hex())
+
+				err = privateChanel.Publish(context.Background(),
+					"status",
+					newItem,
+				)
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
+		default:
+			log.Printf("unsupported msg.Data type: %T", msg.Data)
+		}
+	})
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer unsubscribe()
+	select {}
 
 	/*
 		client, err := ably.NewRealtime(

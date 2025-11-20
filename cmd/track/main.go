@@ -23,8 +23,8 @@ import (
 
 type Watch struct {
 	Item_ID sql.NullString `json:"item_id"`
-	Token   sql.NullString `json:"token`
-	Device  sql.NullString `json:"device`
+	Token   sql.NullString `json:"token"`
+	Device  sql.NullString `json:"device"`
 }
 
 type Item struct {
@@ -118,7 +118,7 @@ func analyse(pgDB *sql.DB, currentPrice float64, uuid string) {
 
 	rows, err := pgDB.Query(query, uuid)
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 	}
 	defer rows.Close()
 
@@ -224,7 +224,7 @@ func assessItem(pgDB *sql.DB, mongoClient *mongo.Client, uuid string) {
 
 	rows, err := pgDB.Query(query, uuid)
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 	}
 	defer rows.Close()
 
@@ -247,7 +247,7 @@ func getList(pgDB *sql.DB, mongoClient *mongo.Client) error {
 
 	rows, err := pgDB.Query(query)
 	if err != nil {
-		fmt.Printf(err.Error())
+		fmt.Print(err.Error())
 	}
 	defer rows.Close()
 

@@ -182,7 +182,7 @@ func PriceChange(prices []Prices) float64 {
 func SavePrice(mongoClient *mongo.Client, currentPrice float64, uuid string) {
 	newObjectID, err := primitive.ObjectIDFromHex(uuid)
 	if err != nil {
-		fmt.Printf(err.Error())
+		fmt.Print(err.Error())
 		return
 	}
 
@@ -196,7 +196,7 @@ func SavePrice(mongoClient *mongo.Client, currentPrice float64, uuid string) {
 
 	cursor, err := collection.InsertOne(context.Background(), doc)
 	if err != nil {
-		fmt.Printf(err.Error())
+		fmt.Print(err.Error())
 		return
 	}
 
@@ -415,7 +415,6 @@ func OpenPageTakealot(link string) (Item, error) {
 		if strings.Contains(dataRef, "main-gallery-photo") {
 			src, exists := s.Attr("src")
 			if exists {
-				fmt.Println(src)
 				images = append(images, src)
 			}
 		}
