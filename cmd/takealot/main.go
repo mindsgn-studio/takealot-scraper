@@ -210,7 +210,6 @@ func (s *Scraper) FetchPage(parentCtx context.Context, item string, after string
 			continue
 		}
 
-		// ensure body closed
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {

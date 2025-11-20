@@ -5,25 +5,18 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"math"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
-	"firebase.google.com/go/v4/messaging"
 	"github.com/PuerkitoBio/goquery"
-	fcm "github.com/appleboy/go-fcm"
 	"github.com/chromedp/chromedp"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
-	"github.com/mindsgn-studio/takealot-scraper/internal/model"
-	"github.com/sideshow/apns2"
-	"github.com/sideshow/apns2/token"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"github.com/mindsgn-studio/takealot-scraper/internal/core"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -38,12 +31,6 @@ type Item struct {
 	UUID        string `json:"uuid"`
 	Link        string `json:"link"`
 	Source_Name string `json:"source_name"`
-}
-
-type Prices struct {
-	Item_ID string    `json:"item_id"`
-	Price   float64   `json:"price"`
-	Date    time.Time `json:"date"`
 }
 
 func connectMongo() (*mongo.Client, error) {
@@ -126,127 +113,6 @@ func connectPostgres() (*sql.DB, error) {
 	return db, nil
 }
 
-func getCurrent(prices []Prices) float64 {
-	if len(prices) == 0 {
-		return 0
-	}
-	return prices[len(prices)-1].Price
-}
-
-func getPrevious(prices []Prices) float64 {
-	if len(prices) < 2 {
-		return 0
-	}
-	return prices[len(prices)-2].Price
-}
-
-func lowestPrice(prices []Prices) float64 {
-	if len(prices) == 0 {
-		return 0
-	}
-	lowest := prices[0].Price
-	for _, p := range prices {
-		if p.Price < lowest {
-			lowest = p.Price
-		}
-	}
-	return lowest
-}
-
-func highestPrice(prices []Prices) float64 {
-	if len(prices) == 0 {
-		return 0
-	}
-	highest := prices[0].Price
-	for _, p := range prices {
-		if p.Price > highest {
-			highest = p.Price
-		}
-	}
-	return highest
-}
-
-func averagePrice(prices []Prices) float64 {
-	if len(prices) == 0 {
-		return 0
-	}
-	var total float64
-	for _, p := range prices {
-		total += p.Price
-	}
-	return total / float64(len(prices))
-}
-
-func priceChange(prices []Prices) float64 {
-	if len(prices) < 2 {
-		return 0
-	}
-
-	current := getCurrent(prices)
-	previous := getPrevious(prices)
-
-	if previous == 0 {
-		return 0
-	}
-
-	change := ((current - previous) / previous) * 100
-	return math.Round(change*100) / 100
-}
-
-func androidpushhNotification(DeviceToken string) {
-	fmt.Println(DeviceToken)
-	ctx := context.Background()
-	client, err := fcm.NewClient(
-		ctx,
-		fcm.WithCredentialsFile("./google-services.json"),
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	resp, err := client.Send(
-		ctx,
-		&messaging.Message{
-			Token: DeviceToken,
-			Data: map[string]string{
-				"foo": "bar",
-			},
-		},
-	)
-	if err != nil {
-		fmt.Println("Send error:", err)
-		return
-	}
-	fmt.Println("Success:", resp.SuccessCount, "Failure:", resp.FailureCount)
-}
-
-func iosPushNotification(DeviceToken string) {
-	authKey, err := token.AuthKeyFromFile("./AuthKey_CCKC4GS5P8.p8")
-	if err != nil {
-		log.Fatal("token error:", err)
-	}
-
-	token := &token.Token{
-		AuthKey: authKey,
-		KeyID:   "CCKC4GS5P8",
-		TeamID:  "B3U8UM2966",
-	}
-
-	client := apns2.NewTokenClient(token)
-	notification := &apns2.Notification{}
-	notification.DeviceToken = DeviceToken
-	notification.Topic = "mindsgn.studio.snap-price"
-	notification.Payload = []byte(`{"aps":{"alert":"Hello!"}}`)
-
-	res, err := client.Push(notification)
-
-	if err != nil {
-		log.Fatal("Error:", err)
-	}
-
-	fmt.Printf("%v %v %v\n", res.StatusCode, res.ApnsID, res.Reason)
-}
-
 func analyse(pgDB *sql.DB, currentPrice float64, uuid string) {
 	query := `SELECT item_id, price, date FROM prices WHERE item_id = $1 ORDER BY date ASC`
 
@@ -256,9 +122,9 @@ func analyse(pgDB *sql.DB, currentPrice float64, uuid string) {
 	}
 	defer rows.Close()
 
-	var prices []Prices
+	var prices []core.Prices
 	for rows.Next() {
-		var price Prices
+		var price core.Prices
 		if err := rows.Scan(&price.Item_ID, &price.Price, &price.Date); err != nil {
 			log.Println("Error scanning price:", err)
 		}
@@ -270,45 +136,12 @@ func analyse(pgDB *sql.DB, currentPrice float64, uuid string) {
 		}
 	}
 
-	fmt.Println("Current Price:", getCurrent(prices))
-	fmt.Println("Previous Price:", getPrevious(prices))
-	fmt.Println("Lowest Price:", lowestPrice(prices))
-	fmt.Println("Highest Price:", highestPrice(prices))
-	fmt.Println("Average Price:", averagePrice(prices))
-	fmt.Println("Price Change (%):", priceChange(prices))
-}
-
-func savePrice(pgDB *sql.DB, mongoClient *mongo.Client, currentPrice float64, uuid string) {
-	newObjectID, err := primitive.ObjectIDFromHex(uuid)
-	if err != nil {
-		fmt.Printf(err.Error())
-		return
-	}
-
-	collection := mongoClient.Database("snapprice").Collection("prices")
-	doc := model.Price{
-		ItemID:   newObjectID,
-		Date:     time.Now().UTC(),
-		Currency: "zar",
-		Price:    currentPrice,
-	}
-
-	cursor, err := collection.InsertOne(context.Background(), doc)
-	if err != nil {
-		fmt.Printf(err.Error())
-		return
-	}
-
-	fmt.Println(cursor.InsertedID)
-
-	insertQuery := `INSERT INTO prices (item_id, price, date) VALUES ($1, $2, $3)`
-
-	result, err := pgDB.Exec(insertQuery, uuid, currentPrice, time.Now().UTC())
-	if err != nil {
-		log.Printf("Error inserting price for item %s: %v", uuid, err)
-	}
-
-	fmt.Println(result.RowsAffected())
+	fmt.Println("Current Price:", core.GetCurrent(prices))
+	fmt.Println("Previous Price:", core.GetPrevious(prices))
+	fmt.Println("Lowest Price:", core.LowestPrice(prices))
+	fmt.Println("Highest Price:", core.HighestPrice(prices))
+	fmt.Println("Average Price:", core.AveragePrice(prices))
+	fmt.Println("Price Change (%):", core.PriceChange(prices))
 }
 
 func extractText(text string) float64 {
@@ -350,33 +183,6 @@ func OpenPageAmazon(pgDB *sql.DB, link string, uuid string) {
 }
 */
 
-func extractTakealotPrice(text string) float64 {
-	re := regexp.MustCompile("R[\\s\\p{Zs}]*([\\d.,\\s\\xA0]+)")
-	matches := re.FindStringSubmatch(text)
-	if len(matches) < 2 {
-		return 0
-	}
-
-	priceStr := matches[1]
-
-	priceStr = strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) {
-			return -1
-		}
-		return r
-	}, priceStr)
-
-	priceStr = strings.ReplaceAll(priceStr, ",", "")
-
-	price, err := strconv.ParseFloat(priceStr, 64)
-	if err != nil {
-		fmt.Println("Error parsing price:", err)
-		return 0
-	}
-
-	return price
-}
-
 func OpenPageTakealot(pgDB *sql.DB, mongoClient *mongo.Client, link string, uuid string) {
 	ctx, cancel := chromedp.NewContext(context.Background())
 	defer cancel()
@@ -409,8 +215,8 @@ func OpenPageTakealot(pgDB *sql.DB, mongoClient *mongo.Client, link string, uuid
 		return
 	}
 
-	currentPrice := extractTakealotPrice(title)
-	savePrice(pgDB, mongoClient, currentPrice, uuid)
+	currentPrice := core.ExtractTakealotPrice(title)
+	core.SavePrice(mongoClient, currentPrice, uuid)
 }
 
 func assessItem(pgDB *sql.DB, mongoClient *mongo.Client, uuid string) {
