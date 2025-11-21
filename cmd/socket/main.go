@@ -7,20 +7,21 @@ import (
 	"os"
 
 	"github.com/ably/ably-go/ably"
+	"github.com/joho/godotenv"
 	"github.com/mindsgn-studio/takealot-scraper/internal/core"
 )
 
 func main() {
 	logger := log.New(os.Stdout, "[tracker] ", log.LstdFlags|log.Lmsgprefix)
+	_ = godotenv.Load()
 
-	mongoClient, err := core.ConnectMongo()
-	if err != nil {
-		logger.Fatal("Failed to connect to MongoDB:", err)
+	albyKey := os.Getenv("ABLY_KEY")
+	if albyKey == "" {
+		logger.Fatal("Failed to get Alby Key:")
 	}
-	defer mongoClient.Disconnect(context.Background())
 
 	client, err := ably.NewRealtime(
-		ably.WithKey("2CIRYw.fvWv8A:Dg4mmFzMik-V7K8QMXCxY6c27b8VXBI9yqcV08qQn-E"),
+		ably.WithKey(albyKey),
 		ably.WithClientID("local-server"),
 	)
 	if err != nil {
@@ -53,11 +54,11 @@ func main() {
 				return
 			} else {
 				fmt.Println("saving data")
-				newEntry, err := core.SaveItemData(mongoClient, newItem.Title, newItem.Images, newItem.Link, newItem.ID, newItem.Brand)
+				newEntry, err := core.SaveItemData(newItem.Title, newItem.Images, newItem.Link, newItem.ID, newItem.Brand)
 				if err != nil {
 					logger.Fatal("Failed to save", err)
 				}
-				core.SavePrice(mongoClient, newItem.Current_Price, string(newEntry.Hex()))
+				core.SavePrice(newItem.Current_Price, string(newEntry.Hex()))
 
 				newItem.UUID = string(newEntry.Hex())
 

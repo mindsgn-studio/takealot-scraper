@@ -54,7 +54,7 @@ func ExtractTakealotID(url string) string {
 		return ""
 	}
 
-	lastPart := parts[len(parts)-1] // "PLID93155744"
+	lastPart := parts[len(parts)-1]
 
 	if strings.HasPrefix(lastPart, "PLID") {
 		return strings.TrimPrefix(lastPart, "PLID")
@@ -63,8 +63,16 @@ func ExtractTakealotID(url string) string {
 	return ""
 }
 
-func SaveItemData(mongoClient *mongo.Client, title string, images []string, link string, id string, brand string) (primitive.ObjectID, error) {
-	collection := mongoClient.Database("snapprice").Collection("prices")
+func SaveItemData(title string, images []string, link string, id string, brand string) (primitive.ObjectID, error) {
+	mongoClient, err := ConnectMongo()
+	if err != nil {
+		log.Println("Failed to connect to MongoDB:", err)
+		time.Sleep(5 * time.Second)
+		return primitive.NilObjectID, fmt.Errorf("Failed to connect to MongoDB: %w", err)
+	}
+	defer mongoClient.Disconnect(context.Background())
+
+	collection := mongoClient.Database("snapprice").Collection("items")
 
 	filter := bson.M{
 		"sources.id":     id,
@@ -85,7 +93,7 @@ func SaveItemData(mongoClient *mongo.Client, title string, images []string, link
 	opts := options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)
 
 	var updatedDoc bson.M
-	err := collection.FindOneAndUpdate(context.Background(), filter, update, opts).Decode(&updatedDoc)
+	err = collection.FindOneAndUpdate(context.Background(), filter, update, opts).Decode(&updatedDoc)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			var doc bson.M
@@ -179,14 +187,30 @@ func PriceChange(prices []Prices) float64 {
 	return math.Round(change*100) / 100
 }
 
-func SavePrice(mongoClient *mongo.Client, currentPrice float64, uuid string) {
+func SavePrice(currentPrice float64, uuid string) {
+	mongoClient, err := ConnectMongo()
+	if err != nil {
+		log.Println("Failed to connect to MongoDB:", err)
+		time.Sleep(5 * time.Second)
+		return
+	}
+	defer mongoClient.Disconnect(context.Background())
+
+	collection := mongoClient.Database("snapprice").Collection("prices")
+
 	newObjectID, err := primitive.ObjectIDFromHex(uuid)
 	if err != nil {
 		fmt.Print(err.Error())
 		return
 	}
 
-	collection := mongoClient.Database("snapprice").Collection("prices")
+	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
+
+	filter := map[string]interface{}{
+		"itemID": uuid,
+		"date":   map[string]interface{}{"$gt": fiveMinutesAgo},
+	}
+
 	doc := model.Price{
 		ItemID:   newObjectID,
 		Date:     time.Now().UTC(),
@@ -194,13 +218,20 @@ func SavePrice(mongoClient *mongo.Client, currentPrice float64, uuid string) {
 		Price:    currentPrice,
 	}
 
-	cursor, err := collection.InsertOne(context.Background(), doc)
+	var result map[string]interface{}
+	err = collection.FindOne(context.Background(), filter).Decode(&result)
 	if err != nil {
-		fmt.Print(err.Error())
+		cursor, err := collection.InsertOne(context.Background(), doc)
+		if err != nil {
+			fmt.Print(err.Error())
+			return
+		}
+
+		fmt.Println(cursor.InsertedID)
 		return
 	}
 
-	fmt.Println(cursor.InsertedID)
+	return
 }
 
 func AssessItem(pgDB *sql.DB, link string) ([]Item, error) {
