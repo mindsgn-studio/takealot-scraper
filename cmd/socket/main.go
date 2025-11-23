@@ -5,152 +5,198 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/ably/ably-go/ably"
 	"github.com/joho/godotenv"
 	"github.com/mindsgn-studio/takealot-scraper/internal/core"
 )
 
+const (
+	workerCount       = 5
+	jobQueueSize      = 50
+	ablyConnectTimout = 15 * time.Second
+)
+
+type job struct {
+	clientID string
+	url      string
+	ctx      context.Context
+}
+
 func main() {
 	logger := log.New(os.Stdout, "[tracker] ", log.LstdFlags|log.Lmsgprefix)
 	_ = godotenv.Load()
 
-	albyKey := os.Getenv("ABLY_KEY")
-	if albyKey == "" {
-		logger.Fatal("Failed to get Alby Key:")
+	ablyKey := os.Getenv("ABLY_KEY")
+	if ablyKey == "" {
+		logger.Fatal("ABLY_KEY missing from environment")
 	}
 
 	client, err := ably.NewRealtime(
-		ably.WithKey(albyKey),
+		ably.WithKey(ablyKey),
 		ably.WithClientID("local-server"),
 	)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatalf("failed to create ably client: %v", err)
 	}
 	defer client.Close()
 
-	connStateChan := make(chan ably.ConnectionStateChange, 1)
-	client.Connection.On(ably.ConnectionEventConnected, func(change ably.ConnectionStateChange) {
-		connStateChan <- change
-	})
-	select {
-	case <-connStateChan:
-		fmt.Println("Made my first connection!")
-	case <-context.Background().Done():
-		log.Fatal("Context cancelled before connection established")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// graceful shutdown handling
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
+	// wait for ably connection or timeout
+	if err := waitForConnection(ctx, client, ablyConnectTimout); err != nil {
+		logger.Fatalf("failed to connect to ably: %v", err)
+	}
+	logger.Println("connected to ably")
+
+	itemsCh := client.Channels.Get("items")
+
+	// job queue and worker pool
+	jobs := make(chan job, jobQueueSize)
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go worker(ctx, &wg, client, logger, jobs)
 	}
 
-	channel := client.Channels.Get("items")
+	// channel cache for private channels
+	// var channelCache sync.Map // map[string]*ably.RealtimeChannel
 
-	unsubscribe, err := channel.SubscribeAll(context.Background(), func(msg *ably.Message) {
+	unsubscribe, err := itemsCh.SubscribeAll(ctx, func(msg *ably.Message) {
+		// accept string and []byte payloads and queue them for processing
+		url := ""
 		switch v := msg.Data.(type) {
 		case string:
-			channelName := "private:" + msg.ClientID
-			privateChanel := client.Channels.Get(channelName)
-
-			newItem, err := core.OpenPageTakealot(v)
-			if err != nil {
-				fmt.Println(err)
-				return
-			} else {
-				fmt.Println("saving data")
-				newEntry, err := core.SaveItemData(newItem.Title, newItem.Images, newItem.Link, newItem.ID, newItem.Brand)
-				if err != nil {
-					logger.Fatal("Failed to save", err)
-				}
-				core.SavePrice(newItem.Current_Price, string(newEntry.Hex()))
-
-				newItem.UUID = string(newEntry.Hex())
-
-				err = privateChanel.Publish(context.Background(),
-					"status",
-					newItem,
-				)
-				if err != nil {
-					log.Fatal(err)
-				}
-			}
+			url = v
+		case []byte:
+			url = string(v)
 		default:
-			log.Printf("unsupported msg.Data type: %T", msg.Data)
+			logger.Printf("unsupported msg.Data type: %T (client=%s)", msg.Data, msg.ClientID)
+			return
+		}
+
+		// enqueue job without blocking the ably goroutine
+		select {
+		case jobs <- job{clientID: msg.ClientID, url: url, ctx: ctx}:
+			// queued
+		default:
+			logger.Printf("job queue full, rejecting message from client=%s", msg.ClientID)
+		}
+	})
+	if err != nil {
+		logger.Fatalf("failed to subscribe to items channel: %v", err)
+	}
+
+	// wait for shutdown signal
+	<-quit
+	logger.Println("shutdown requested")
+
+	// stop receiving new messages
+	unsubscribe()
+	// cancel workers
+	cancel()
+	// drain queue and wait for workers
+	close(jobs)
+	wg.Wait()
+	logger.Println("all workers stopped; exiting")
+}
+
+func waitForConnection(ctx context.Context, client *ably.Realtime, timeout time.Duration) error {
+	connCh := make(chan ably.ConnectionStateChange, 1)
+	client.Connection.On(ably.ConnectionEventConnected, func(change ably.ConnectionStateChange) {
+		select {
+		case connCh <- change:
+		default:
 		}
 	})
 
-	if err != nil {
-		log.Fatal(err)
+	select {
+	case <-connCh:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("timeout waiting for ably connection")
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	defer unsubscribe()
-	select {}
+}
 
-	/*
-		client, err := ably.NewRealtime(
-			ably.WithKey("2CIRYw.fvWv8A:Dg4mmFzMik-V7K8QMXCxY6c27b8VXBI9yqcV08qQn-E"),
-			ably.WithClientID("local-server"),
-		)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer client.Close()
-
-		connStateChan := make(chan ably.ConnectionStateChange, 1)
-		client.Connection.On(ably.ConnectionEventConnected, func(change ably.ConnectionStateChange) {
-			connStateChan <- change
-		})
+func worker(ctx context.Context, wg *sync.WaitGroup, client *ably.Realtime, logger *log.Logger, jobs <-chan job) {
+	defer wg.Done()
+	for {
 		select {
-		case <-connStateChan:
-			fmt.Println("Made my first connection!")
-		case <-context.Background().Done():
-			log.Fatal("Context cancelled before connection established")
-		}
-
-		channel := client.Channels.Get("items")
-
-		unsubscribe, err := channel.SubscribeAll(context.Background(), func(msg *ably.Message) {
-			switch v := msg.Data.(type) {
-			case string:
-				channelName := "private:" + msg.ClientID
-				privateChanel := client.Channels.Get(channelName)
-				items, err := core.AssessItem(pgDB, v)
-				if err != nil {
-					fmt.Println(err)
-				}
-
-				var currentPrice float64
-
-				if len(items) == 0 {
-					data, err := core.OpenPageTakealot(v)
-					if err != nil {
-						fmt.Println(err)
-					}
-
-					fmt.Println(data)
-				}
-
-				item := core.Item{
-					UUID:          "",
-					Link:          "",
-					Image:         "",
-					Title:         "",
-					Source_Name:   "",
-					Current_Price: currentPrice,
-				}
-
-				err = privateChanel.Publish(context.Background(),
-					"example",
-					item,
-				)
-				if err != nil {
-					log.Fatal(err)
-				}
-			default:
-				log.Printf("unsupported msg.Data type: %T", msg.Data)
+		case <-ctx.Done():
+			return
+		case j, ok := <-jobs:
+			if !ok {
+				return
 			}
-		})
-
-		if err != nil {
-			log.Fatal(err)
+			if err := processJob(j, client, logger); err != nil {
+				logger.Printf("job error (client=%s, url=%s): %v", j.clientID, j.url, err)
+			}
 		}
-		defer unsubscribe()
+	}
+}
 
-		select {}
-	*/
+func processJob(j job, client *ably.Realtime, logger *log.Logger) error {
+	opCtx, cancel := context.WithTimeout(j.ctx, 30*time.Second)
+	defer cancel()
+
+	channelName := "private:" + j.clientID
+
+	// helper to publish status
+	publishStatus := func(status string, detail any) {
+		privateCh := client.Channels.Get(channelName)
+		_ = privateCh.Publish(opCtx, "status", map[string]any{
+			"status": status,
+			"detail": detail,
+			"time":   time.Now().UTC(),
+		})
+	}
+
+	// 1. Try scrape
+	item, err := core.OpenPageTakealot(j.url)
+	if err != nil {
+		publishStatus("error", map[string]any{
+			"step":    "scrape",
+			"message": fmt.Sprintf("failed to open page: %v", err),
+			"url":     j.url,
+		})
+		return fmt.Errorf("open page: %w", err)
+	}
+
+	// 2. Save item in DB
+	entry, err := core.SaveItemData(item.Title, item.Images, item.Link, item.ID, item.Brand)
+	if err != nil {
+		publishStatus("error", map[string]any{
+			"step":    "save_item",
+			"message": fmt.Sprintf("failed to save item data: %v", err),
+			"url":     j.url,
+		})
+		return fmt.Errorf("save item data: %w", err)
+	}
+
+	item.UUID = entry.Hex()
+
+	// 3. Optionally save price (commented out by user)
+	// if err := core.SavePrice(item.Current_Price, entry.Hex()); err != nil {
+	//     publishStatus("error", map[string]any{
+	//         "step":    "save_price",
+	//         "message": fmt.Sprintf("failed to save price: %v", err),
+	//     })
+	//     return fmt.Errorf("save price: %w", err)
+	// }
+
+	// 4. Publish SUCCESS
+	publishStatus("ok", item)
+
+	return nil
 }

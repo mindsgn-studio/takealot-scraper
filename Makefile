@@ -24,4 +24,5 @@ run-server: build
 	pm2 start ./bin/track --name "track-0"
 	pm2 start ./bin/sync --name "sync-0"
 	pm2 save
+	pm2 monit
 

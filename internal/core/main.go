@@ -187,12 +187,12 @@ func PriceChange(prices []Prices) float64 {
 	return math.Round(change*100) / 100
 }
 
-func SavePrice(currentPrice float64, uuid string) {
+func SavePrice(currentPrice float64, uuid string) error {
 	mongoClient, err := ConnectMongo()
 	if err != nil {
 		log.Println("Failed to connect to MongoDB:", err)
 		time.Sleep(5 * time.Second)
-		return
+		return err
 	}
 	defer mongoClient.Disconnect(context.Background())
 
@@ -201,7 +201,7 @@ func SavePrice(currentPrice float64, uuid string) {
 	newObjectID, err := primitive.ObjectIDFromHex(uuid)
 	if err != nil {
 		fmt.Print(err.Error())
-		return
+		return err
 	}
 
 	fiveMinutesAgo := time.Now().Add(-5 * time.Minute)
@@ -224,14 +224,14 @@ func SavePrice(currentPrice float64, uuid string) {
 		cursor, err := collection.InsertOne(context.Background(), doc)
 		if err != nil {
 			fmt.Print(err.Error())
-			return
+			return err
 		}
 
 		fmt.Println(cursor.InsertedID)
-		return
+		return nil
 	}
 
-	return
+	return nil
 }
 
 func AssessItem(pgDB *sql.DB, link string) ([]Item, error) {
@@ -317,7 +317,7 @@ func ConnectMongo() (*mongo.Client, error) {
 		SetMaxPoolSize(10).
 		SetMinPoolSize(1)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	client, err := mongo.Connect(ctx, clientOptions)
