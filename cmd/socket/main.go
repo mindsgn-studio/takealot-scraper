@@ -152,7 +152,6 @@ func processJob(j job, client *ably.Realtime, logger *log.Logger) error {
 
 	channelName := "private:" + j.clientID
 
-	// helper to publish status
 	publishStatus := func(status string, detail any) {
 		privateCh := client.Channels.Get(channelName)
 		_ = privateCh.Publish(opCtx, "status", map[string]any{
@@ -162,7 +161,6 @@ func processJob(j job, client *ably.Realtime, logger *log.Logger) error {
 		})
 	}
 
-	// 1. Try scrape
 	item, err := core.OpenPageTakealot(j.url)
 	if err != nil {
 		publishStatus("error", map[string]any{
@@ -173,7 +171,6 @@ func processJob(j job, client *ably.Realtime, logger *log.Logger) error {
 		return fmt.Errorf("open page: %w", err)
 	}
 
-	// 2. Save item in DB
 	entry, err := core.SaveItemData(item.Title, item.Images, item.Link, item.ID, item.Brand)
 	if err != nil {
 		publishStatus("error", map[string]any{
@@ -186,16 +183,14 @@ func processJob(j job, client *ably.Realtime, logger *log.Logger) error {
 
 	item.UUID = entry.Hex()
 
-	// 3. Optionally save price (commented out by user)
-	// if err := core.SavePrice(item.Current_Price, entry.Hex()); err != nil {
-	//     publishStatus("error", map[string]any{
-	//         "step":    "save_price",
-	//         "message": fmt.Sprintf("failed to save price: %v", err),
-	//     })
-	//     return fmt.Errorf("save price: %w", err)
-	// }
+	if err := core.SavePrice(item.Current_Price, entry.Hex()); err != nil {
+		publishStatus("error", map[string]any{
+			"step":    "save_price",
+			"message": fmt.Sprintf("failed to save price: %v", err),
+		})
+		return fmt.Errorf("save price: %w", err)
+	}
 
-	// 4. Publish SUCCESS
 	publishStatus("ok", item)
 
 	return nil
