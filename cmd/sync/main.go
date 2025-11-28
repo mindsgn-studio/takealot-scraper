@@ -57,31 +57,29 @@ func main() {
 		time.Sleep(5 * time.Second)
 	}
 
-	for {
-		log.Println("Starting MongoDB to PostgreSQL migration...")
+	log.Println("Starting MongoDB to PostgreSQL migration...")
 
-		var wg sync.WaitGroup
-		wg.Add(2)
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-		go func() {
-			defer wg.Done()
-			if err := migrateItems(mongoClient, pgDB); err != nil {
-				log.Println("migrateItems failed:", err)
-			}
-		}()
+	go func() {
+		defer wg.Done()
+		if err := migrateItems(mongoClient, pgDB); err != nil {
+			log.Println("migrateItems failed:", err)
+		}
+	}()
 
-		go func() {
-			defer wg.Done()
-			if err := migratePrices(mongoClient, pgDB); err != nil {
-				log.Println("migratePrices failed:", err)
-			}
-		}()
+	go func() {
+		defer wg.Done()
+		if err := migratePrices(mongoClient, pgDB); err != nil {
+			log.Println("migratePrices failed:", err)
+		}
+	}()
 
-		wg.Wait()
-		log.Println("Iteration finished. Restarting in 5 seconds...")
+	wg.Wait()
+	log.Println("Iteration finished. Restarting in 5 seconds...")
 
-		time.Sleep(1 * time.Minute)
-	}
+	time.Sleep(1 * time.Minute)
 }
 
 func migrateItems(mongoClient *mongo.Client, pgDB *sql.DB) error {
