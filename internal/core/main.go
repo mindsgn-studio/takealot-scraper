@@ -15,10 +15,7 @@ import (
 	"unicode"
 
 	"firebase.google.com/go/v4/messaging"
-	"github.com/PuerkitoBio/goquery"
 	"github.com/appleboy/go-fcm"
-	"github.com/chromedp/chromedp"
-	"github.com/gocolly/colly"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/mindsgn-studio/takealot-scraper/internal/model"
@@ -38,6 +35,7 @@ type Item struct {
 	Image         string   `json:"image"`
 	Images        []string `json:"images"`
 	Title         string   `json:"title"`
+	In_Stock      bool     `json:"in_stock"`
 	Source_Name   string   `json:"source_name"`
 	Current_Price float64  `json:"current_price"`
 }
@@ -63,7 +61,7 @@ func ExtractTakealotID(url string) string {
 	return ""
 }
 
-func SaveItemData(title string, images []string, link string, id string, brand string) (primitive.ObjectID, error) {
+func SaveItemData(item Item) (primitive.ObjectID, error) {
 	mongoClient, err := ConnectMongo()
 	if err != nil {
 		log.Println("Failed to connect to MongoDB:", err)
@@ -75,16 +73,17 @@ func SaveItemData(title string, images []string, link string, id string, brand s
 	collection := mongoClient.Database("snapprice").Collection("items")
 
 	filter := bson.M{
-		"sources.id":     id,
-		"sources.source": "takealot",
+		"sources.id":     item.ID,
+		"sources.source": item.Source_Name,
 	}
 	update := bson.M{
 		"$set": bson.M{
-			"title":   title,
-			"images":  images,
-			"link":    link,
-			"brand":   brand,
-			"updated": time.Now().UTC(),
+			"title":    item.Title,
+			"images":   item.Images,
+			"link":     item.Link,
+			"in_stock": item.In_Stock,
+			"brand":    item.Brand,
+			"updated":  time.Now().UTC(),
 		},
 		"$setOnInsert": bson.M{
 			"created": time.Now().UTC(),
@@ -354,23 +353,6 @@ func ExtractText(text string) float64 {
 	return 0
 }
 
-func OpenAmazonPage(link string) float64 {
-	var currentPrice float64
-	collyClient := colly.NewCollector()
-	collyClient.UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-	collyClient.OnHTML("body", func(body *colly.HTMLElement) {
-		body.ForEach("div.a-section.a-spacing-none.aok-align-center.aok-relative", func(index int, element *colly.HTMLElement) {
-			currentPrice = ExtractText(element.Text)
-			return
-		})
-	})
-
-	collyClient.Visit(link)
-	collyClient.Wait()
-	return currentPrice
-}
-
 func extractTakealotPrice(text string) float64 {
 	re := regexp.MustCompile("R[\\s\\p{Zs}]*([\\d.,\\s\\xA0]+)")
 	matches := re.FindStringSubmatch(text)
@@ -396,74 +378,6 @@ func extractTakealotPrice(text string) float64 {
 	}
 
 	return price
-}
-
-func OpenPageTakealot(link string) (Item, error) {
-	ctx, cancel := chromedp.NewContext(context.Background())
-	defer cancel()
-
-	var html string
-
-	var item = Item{
-		UUID:          "",
-		Link:          link,
-		Image:         "",
-		Title:         "",
-		Source_Name:   "",
-		Current_Price: 0,
-	}
-
-	err := chromedp.Run(ctx,
-		chromedp.Navigate(link),
-		chromedp.Sleep(5*time.Second),
-		chromedp.OuterHTML("html", &html),
-	)
-
-	if err != nil {
-		log.Println("Error:", err)
-		return item, err
-	}
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		log.Println("Error parsing HTML:", err)
-		return item, err
-	}
-
-	price := strings.TrimSpace(
-		doc.Find("span.currency.plus.currency-module_currency_29IIm").First().Text(),
-	)
-
-	currentPrice := extractTakealotPrice(price)
-
-	title := doc.Find("h1").Text()
-
-	brand := doc.Find("span.brand-link").Text()
-
-	var images []string
-	doc.Find("img").Each(func(index int, s *goquery.Selection) {
-		dataRef, _ := s.Attr("data-ref")
-		if strings.Contains(dataRef, "main-gallery-photo") {
-			src, exists := s.Attr("src")
-			if exists {
-				images = append(images, src)
-			}
-		}
-	})
-
-	id := ExtractTakealotID(link)
-	if id == "" {
-		return item, fmt.Errorf("no id")
-	}
-
-	item.ID = id
-	item.Current_Price = currentPrice
-	item.Title = title
-	item.Brand = brand
-	item.Images = images
-	item.Image = images[0]
-
-	return item, nil
 }
 
 func IOSPushNotification(DeviceToken string) {

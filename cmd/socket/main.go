@@ -48,11 +48,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// graceful shutdown handling
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
-	// wait for ably connection or timeout
 	if err := waitForConnection(ctx, client, ablyConnectTimout); err != nil {
 		logger.Fatalf("failed to connect to ably: %v", err)
 	}
@@ -60,7 +58,6 @@ func main() {
 
 	itemsCh := client.Channels.Get("items")
 
-	// job queue and worker pool
 	jobs := make(chan job, jobQueueSize)
 	var wg sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
@@ -68,11 +65,7 @@ func main() {
 		go worker(ctx, &wg, client, logger, jobs)
 	}
 
-	// channel cache for private channels
-	// var channelCache sync.Map // map[string]*ably.RealtimeChannel
-
 	unsubscribe, err := itemsCh.SubscribeAll(ctx, func(msg *ably.Message) {
-		// accept string and []byte payloads and queue them for processing
 		url := ""
 		switch v := msg.Data.(type) {
 		case string:
@@ -84,10 +77,8 @@ func main() {
 			return
 		}
 
-		// enqueue job without blocking the ably goroutine
 		select {
 		case jobs <- job{clientID: msg.ClientID, url: url, ctx: ctx}:
-			// queued
 		default:
 			logger.Printf("job queue full, rejecting message from client=%s", msg.ClientID)
 		}
@@ -96,15 +87,11 @@ func main() {
 		logger.Fatalf("failed to subscribe to items channel: %v", err)
 	}
 
-	// wait for shutdown signal
 	<-quit
 	logger.Println("shutdown requested")
 
-	// stop receiving new messages
 	unsubscribe()
-	// cancel workers
 	cancel()
-	// drain queue and wait for workers
 	close(jobs)
 	wg.Wait()
 	logger.Println("all workers stopped; exiting")
@@ -171,7 +158,7 @@ func processJob(j job, client *ably.Realtime, logger *log.Logger) error {
 		return fmt.Errorf("open page: %w", err)
 	}
 
-	entry, err := core.SaveItemData(item.Title, item.Images, item.Link, item.ID, item.Brand)
+	entry, err := core.SaveItemData(item)
 	if err != nil {
 		publishStatus("error", map[string]any{
 			"step":    "save_item",

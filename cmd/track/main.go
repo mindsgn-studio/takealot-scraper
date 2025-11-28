@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"sync"
-	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/mindsgn-studio/takealot-scraper/internal/core"
@@ -69,43 +68,55 @@ func assessItem(pgDB *sql.DB, uuid string) {
 				return
 			}
 
+			if item.Current_Price == 0 {
+				return
+			}
+
+			core.SavePrice(item.Current_Price, uuid)
+		}
+
+		if item.Source_Name == "shoprite" {
+			item, err := core.OpenPageTakealot(item.Link)
+			if err != nil {
+				log.Println("Error scanning price:", err)
+				return
+			}
+
+			if item.Current_Price == 0 {
+				return
+			}
+
 			core.SavePrice(item.Current_Price, uuid)
 		}
 	}
 }
 
 func getList(pgDB *sql.DB) {
-	for {
-		query := `
+	query := `
 			SELECT item_id, token, device FROM watch
 		`
 
-		rows, err := pgDB.Query(query)
-		if err != nil {
-			fmt.Print(err.Error())
+	rows, err := pgDB.Query(query)
+	if err != nil {
+		fmt.Print(err.Error())
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var watch Watch
+		if err := rows.Scan(&watch.Item_ID, &watch.Token, &watch.Device); err != nil {
+			log.Println("Error scanning item:", err)
+			continue
 		}
-		defer rows.Close()
 
-		for rows.Next() {
-			var watch Watch
-			if err := rows.Scan(&watch.Item_ID, &watch.Token, &watch.Device); err != nil {
-				log.Println("Error scanning item:", err)
-				continue
-			}
+		assessItem(pgDB, watch.Item_ID.String)
 
-			assessItem(pgDB, watch.Item_ID.String)
-
-			/*
-				if watch.Token.Valid && watch.Device.Valid && watch.Device.String == "ios" {
-					core.IOSPushNotification(watch.Token.String)
-				}
-
-				if watch.Token.Valid && watch.Device.Valid && watch.Device.String == "android" {
-					core.AndroidpushhNotification(watch.Token.String)
-				}
-			*/
-
+		if watch.Token.Valid && watch.Device.Valid && watch.Device.String == "ios" {
+			core.IOSPushNotification(watch.Token.String)
 		}
-		time.Sleep(5 * time.Minute)
+
+		if watch.Token.Valid && watch.Device.Valid && watch.Device.String == "android" {
+			core.AndroidpushhNotification(watch.Token.String)
+		}
 	}
 }

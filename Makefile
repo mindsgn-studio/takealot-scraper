@@ -11,18 +11,19 @@ fmt: download
 vet: fmt
 	go vet ./...
 
-build: vet
+test: vet
+	go test -v ./internal/core
+
+build: test
 	rm -r ./bin
 	go build -o ./bin/socket ./cmd/socket
 	go build -o ./bin/track ./cmd/track
-	go build -o ./bin/sync ./cmd/sync
 
 run-server: build
 	pm2 stop all
 	pm2 delete all
 	pm2 start ./bin/socket --name "socket-0"
-	pm2 start ./bin/track --name "track-0"
-	pm2 start ./bin/sync --name "sync-0"
+	pm2 start ./bin/track --name "track-0" --cron-restart="0 */2 * * *"
 	pm2 save
 	pm2 monit
 

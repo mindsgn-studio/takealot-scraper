@@ -10,6 +10,7 @@ type Item struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty"`
 	Title     string             `bson:"title"`
 	Images    []string           `bson:"images"`
+	Image     string             `bson:"image"`
 	Link      string             `bson:"link"`
 	Brand     string             `bson:"brand"`
 	Source    string             `bson:"source"`
