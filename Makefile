@@ -19,7 +19,7 @@ build: test
 	go build -o ./bin/socket ./cmd/socket
 	go build -o ./bin/sync ./cmd/sync
 	go build -o ./bin/track ./cmd/track
-
+	
 run-server: build
 	pm2 stop all
 	pm2 delete all

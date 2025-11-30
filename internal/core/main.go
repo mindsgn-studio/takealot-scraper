@@ -28,16 +28,24 @@ import (
 )
 
 type Item struct {
-	ID            string   `json:"id"`
-	UUID          string   `json:"uuid"`
-	Link          string   `json:"link"`
-	Brand         string   `json:"brand"`
-	Image         string   `json:"image"`
-	Images        []string `json:"images"`
-	Title         string   `json:"title"`
-	In_Stock      bool     `json:"in_stock"`
-	Source_Name   string   `json:"source_name"`
-	Current_Price float64  `json:"current_price"`
+	ID             string   `json:"id"`
+	UUID           string   `json:"uuid"`
+	Link           string   `json:"link"`
+	Brand          string   `json:"brand"`
+	Description    string   `json:"description"`
+	Image          string   `json:"image"`
+	Images         []string `json:"images"`
+	Title          string   `json:"title"`
+	In_Stock       bool     `json:"in_stock"`
+	Overall_Rating float64  `json:"overall_rating"`
+	Source_Name    string   `json:"source_name"`
+	Current_Price  float64  `json:"current_price"`
+}
+
+type Ratings struct {
+	Item_ID string  `json:"item_id"`
+	Rating  float64 `json:"rating"`
+	Comment string  `json:"comment"`
 }
 
 type Prices struct {
@@ -62,6 +70,10 @@ func ExtractTakealotID(url string) string {
 }
 
 func SaveItemData(item Item) (primitive.ObjectID, error) {
+	if item.Title == "" {
+		return primitive.NilObjectID, fmt.Errorf("title empty")
+	}
+
 	mongoClient, err := ConnectMongo()
 	if err != nil {
 		log.Println("Failed to connect to MongoDB:", err)
@@ -83,6 +95,7 @@ func SaveItemData(item Item) (primitive.ObjectID, error) {
 			"link":     item.Link,
 			"in_stock": item.In_Stock,
 			"brand":    item.Brand,
+			"rating":   item.Overall_Rating,
 			"updated":  time.Now().UTC(),
 		},
 		"$setOnInsert": bson.M{
@@ -187,6 +200,10 @@ func PriceChange(prices []Prices) float64 {
 }
 
 func SavePrice(currentPrice float64, uuid string) error {
+	if currentPrice == 0 {
+		return nil
+	}
+
 	mongoClient, err := ConnectMongo()
 	if err != nil {
 		log.Println("Failed to connect to MongoDB:", err)
@@ -220,13 +237,12 @@ func SavePrice(currentPrice float64, uuid string) error {
 	var result map[string]interface{}
 	err = collection.FindOne(context.Background(), filter).Decode(&result)
 	if err != nil {
-		cursor, err := collection.InsertOne(context.Background(), doc)
+		_, err := collection.InsertOne(context.Background(), doc)
 		if err != nil {
 			fmt.Print(err.Error())
 			return err
 		}
 
-		fmt.Println(cursor.InsertedID)
 		return nil
 	}
 
